@@ -1,0 +1,69 @@
+.recent-projects__empty {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+  padding: var(--space-4) 0;
+}
+
+.recent-projects__list {
+  display: flex;
+  flex-direction: column;
+}
+
+.recent-projects__row {
+  display: grid;
+  grid-template-columns: 1.6fr 0.7fr 1fr 0.6fr 0.6fr 0.6fr;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.recent-projects__row:last-child {
+  border-bottom: none;
+}
+
+.recent-projects__row:hover {
+  background: var(--color-neutral-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.recent-projects__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.recent-projects__name {
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-primary);
+}
+
+.recent-projects__meta {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-projects__progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.recent-projects__progress-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  width: 32px;
+}
+
+.recent-projects__best,
+.recent-projects__count,
+.recent-projects__time {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  text-align: right;
+}

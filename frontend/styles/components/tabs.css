@@ -1,0 +1,25 @@
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-6);
+}
+
+.tabs__item {
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+  padding: var(--space-3) 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.tabs__item:hover {
+  color: var(--color-text-primary);
+}
+
+.tabs__item--active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}

@@ -1,0 +1,37 @@
+# --- Secrets -- never commit these ---
+.env
+.env.local
+.env.*.local
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# --- Data (local SQLite DB, uploaded customer files, generated reports) ---
+data/*.db
+data/uploads/
+reports/generated/*.docx
+backend/tests/_test_env/
+
+# --- Node / Next.js ---
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/next-env.d.ts
+frontend/.env.local
+npm-debug.log*
+
+# --- Editor / OS ---
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# --- Generated / backup files ---
+*.bak
+*.tsbuildinfo

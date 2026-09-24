@@ -1,0 +1,24 @@
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.breadcrumbs__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.breadcrumbs__link {
+  color: var(--color-text-secondary);
+}
+
+.breadcrumbs__link:hover {
+  color: var(--color-text-primary);
+}
+
+.breadcrumbs__current {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+}

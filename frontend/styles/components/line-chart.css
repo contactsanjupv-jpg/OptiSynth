@@ -1,0 +1,73 @@
+.line-chart {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.line-chart--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+}
+
+.line-chart__svg {
+  width: 100%;
+  height: auto;
+}
+
+.line-chart__grid-line {
+  stroke: var(--color-chart-grid);
+  stroke-width: 1;
+}
+
+.line-chart__target-line {
+  stroke: var(--color-chart-target);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+}
+
+.line-chart__tick-label {
+  fill: var(--color-text-tertiary);
+  font-size: 10px;
+  font-family: var(--font-sans);
+}
+
+.line-chart__axis-label {
+  fill: var(--color-text-tertiary);
+  font-size: 11px;
+  font-family: var(--font-sans);
+}
+
+.line-chart__legend {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding-left: var(--space-8);
+}
+
+.line-chart__legend-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+
+.line-chart__legend-swatch {
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.line-chart__legend-swatch--dashed {
+  background: repeating-linear-gradient(
+    to right,
+    var(--color-chart-target) 0,
+    var(--color-chart-target) 3px,
+    transparent 3px,
+    transparent 6px
+  );
+}

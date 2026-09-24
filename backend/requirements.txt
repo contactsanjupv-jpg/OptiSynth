@@ -1,0 +1,24 @@
+# Backend dependencies. Install with:
+#   pip install -r backend/requirements.txt
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.35
+pydantic[email]==2.9.2
+itsdangerous==2.2.0
+python-multipart==0.0.9
+python-docx==1.1.2
+
+# PostgreSQL driver -- only needed once DATABASE_URL points at postgresql://
+# rather than sqlite:///. Safe to leave installed either way.
+psycopg2-binary==2.9.9
+
+# Versioned schema migrations. Replaces init_db()'s ad hoc schema.sql
+# execution -- see backend/migrations/README.md.
+alembic==1.13.2
+
+# Scientific/optimization stack used by the engine/ package.
+numpy==1.26.4
+scipy==1.13.1
+scikit-learn==1.5.1
+pandas==2.2.2
+threadpoolctl==3.5.0
