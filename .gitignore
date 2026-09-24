@@ -35,3 +35,4 @@ npm-debug.log*
 # --- Generated / backup files ---
 *.bak
 *.tsbuildinfo
+data/qualification_uploads/
