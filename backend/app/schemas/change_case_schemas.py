@@ -81,6 +81,9 @@ class CandidateResponse(BaseModel):
     candidate_name: str
     properties: dict
     latest_prediction: PredictionResponse | None = None
+    # Heuristic historical-range coverage, judged against the dataset the
+    # latest prediction was generated from. None if not yet ranked.
+    domain_coverage: dict | None = None
 
 
 class RecommendedExperimentResponse(BaseModel):
@@ -97,6 +100,7 @@ class RankResultResponse(BaseModel):
     predicted_probability: float
     uncertainty_std: float
     recommended_experiment: str
+    domain_coverage: dict | None = None
 
 
 class OutcomeResponse(BaseModel):

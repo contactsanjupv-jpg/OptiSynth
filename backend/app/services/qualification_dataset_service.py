@@ -131,26 +131,11 @@ def ingest_qualification_csv(
                 }
             )
 
-    # Priority 4: data-quality calculations.
-    seen = set()
-    duplicate_count = 0
-
-    for r in rows_out:
-        key = (
-            tuple(sorted(r["features"].items())),
-            r["target_value"],
-        )
-
-        if key in seen:
-            duplicate_count += 1
-
-        seen.add(key)
-
-    constant_columns = [
-        col
-        for col in feature_columns
-        if len({r["features"][col] for r in rows_out}) <= 1
-    ]
+    # Priority 4: data-quality calculations (shared with the ranking/report
+    # gates in change_case_service via change_case_rules).
+    duplicate_count, constant_columns = change_case_rules.compute_data_quality_metrics(
+        rows_out, feature_columns,
+    )
 
     if not rows_out:
         raise ValidationError(

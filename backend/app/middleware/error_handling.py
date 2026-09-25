@@ -44,6 +44,23 @@ def register_error_handlers(app: FastAPI) -> None:
             content={"error": "Unable to process your request. Please check the submitted fields and try again."},
         )
 
+    @app.exception_handler(KeyError)
+    async def handle_accidental_key_error(request: Request, err: KeyError):
+        # KeyError is a subclass of LookupError, so without this handler an
+        # accidental KeyError (e.g. a malformed candidate or spec dict missing
+        # an expected key) would be silently caught by the LookupError handler
+        # below and misreported to the client as a 404 "not found", leaking
+        # the raw KeyError text (e.g. "'solids_pct'") in the process. Starlette
+        # resolves handlers by walking the raised exception's own MRO
+        # (KeyError -> LookupError -> Exception), so registering this handler
+        # for the more specific KeyError type takes precedence automatically
+        # and leaves the LookupError handler's deliberate "not found" behavior,
+        # and every existing `raise LookupError(...)` call site, untouched.
+        logger.exception("Unhandled KeyError on %s %s", request.method, request.url.path)
+        if settings.is_production:
+            return JSONResponse(status_code=500, content={"error": "Something went wrong. Please try again."})
+        return JSONResponse(status_code=500, content={"error": "Something went wrong.", "dev_detail": str(err)})
+
     @app.exception_handler(LookupError)
     async def handle_not_found(request: Request, err: LookupError):
         return JSONResponse(status_code=404, content={"error": str(err) or "Not found."})

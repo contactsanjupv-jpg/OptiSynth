@@ -37,6 +37,21 @@ def get_latest_dataset_for_change_case(organization_id: int, change_case_id: int
         return dict(row) if row else None
 
 
+def get_dataset_for_change_case(organization_id: int, change_case_id: int, dataset_id: int):
+    """A specific dataset version, scoped to the organization AND change
+    case -- used to evaluate a prediction/report against the exact dataset
+    it was generated from (predictions.dataset_version_id), never against
+    whichever upload happens to be newest."""
+    with db_connection() as conn:
+        row = conn.execute(
+            text("""SELECT * FROM qualification_datasets
+                     WHERE id = :dataset_id AND organization_id = :org_id
+                       AND change_case_id = :change_case_id"""),
+            {"dataset_id": dataset_id, "org_id": organization_id, "change_case_id": change_case_id},
+        ).mappings().first()
+        return dict(row) if row else None
+
+
 def list_datasets_for_change_case(organization_id: int, change_case_id: int):
     with db_connection() as conn:
         rows = conn.execute(

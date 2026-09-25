@@ -181,5 +181,106 @@ class TestClassifyDataQuality(unittest.TestCase):
         self.assertEqual(result, "invalid")
 
 
+class TestDataQualityMetricsAndRankingGate(unittest.TestCase):
+    def _row(self, v, s, t):
+        return {"features": {"viscosity": v, "solids_pct": s}, "target_value": t}
+
+    def test_metrics_count_exact_duplicates_only(self):
+        rows = [self._row(1, 2, 3), self._row(1, 2, 3), self._row(1, 2, 4), self._row(2, 2, 3)]
+        dups, const = change_case_rules.compute_data_quality_metrics(rows, ["viscosity", "solids_pct"])
+        self.assertEqual(dups, 1)  # only the exact repeat; same features with a different target is not a duplicate
+        self.assertEqual(const, ["solids_pct"])
+
+    def test_metrics_no_constant_columns(self):
+        rows = [self._row(1, 2, 3), self._row(2, 3, 4)]
+        dups, const = change_case_rules.compute_data_quality_metrics(rows, ["viscosity", "solids_pct"])
+        self.assertEqual((dups, const), (0, []))
+
+    def test_ranking_gate_blocks_invalid_and_insufficient(self):
+        for status in ("invalid", "insufficient"):
+            with self.assertRaises(ValidationError):
+                change_case_rules.check_data_quality_allows_ranking(status)
+
+    def test_report_gate_blocks_invalid_but_not_insufficient_or_valid(self):
+        with self.assertRaises(ValidationError):
+            change_case_rules.check_can_generate_report("invalid")
+        change_case_rules.check_can_generate_report("insufficient")  # allowed; report states insufficient evidence
+        change_case_rules.check_can_generate_report("valid")
+
+    def test_ranking_gate_allows_valid(self):
+        change_case_rules.check_data_quality_allows_ranking("valid")  # must not raise
+
+
+class TestClassifyDomainCoverage(unittest.TestCase):
+    """Priority 5. NOTE: the 10% edge margin is a HEURISTIC business
+    threshold, not a scientifically derived one -- these tests pin the
+    definition, they do not validate the number."""
+
+    WITHIN = "within_historical_domain"
+    NEAR = "near_edge_of_domain"
+    OUTSIDE = "outside_historical_domain"
+
+    def test_default_margin_is_ten_percent(self):
+        self.assertEqual(change_case_rules.DOMAIN_EDGE_MARGIN_PCT, 0.10)
+
+    def test_within_including_exact_bounds(self):
+        for v in (0, 5, 10):
+            self.assertEqual(change_case_rules.classify_domain_coverage(v, 0, 10), self.WITHIN)
+
+    def test_near_edge_both_sides_and_exact_margin_boundary(self):
+        # range 0..10 -> margin 1.0
+        for v in (10.5, 11.0, -0.5, -1.0):
+            self.assertEqual(change_case_rules.classify_domain_coverage(v, 0, 10), self.NEAR)
+
+    def test_outside_beyond_margin_both_sides(self):
+        for v in (11.001, 25, -1.001, -50):
+            self.assertEqual(change_case_rules.classify_domain_coverage(v, 0, 10), self.OUTSIDE)
+
+    def test_sensitivity_to_margin_is_explicit_and_adjustable(self):
+        # The SAME value classifies differently as the heuristic margin changes --
+        # proving the threshold is a tunable business setting, not a fact.
+        v = 10.5  # 0.5 beyond max of a 0..10 range (5% of range)
+        self.assertEqual(change_case_rules.classify_domain_coverage(v, 0, 10, edge_margin_pct=0.10), self.NEAR)
+        self.assertEqual(change_case_rules.classify_domain_coverage(v, 0, 10, edge_margin_pct=0.02), self.OUTSIDE)
+        self.assertEqual(change_case_rules.classify_domain_coverage(v, 0, 10, edge_margin_pct=0.0), self.OUTSIDE)
+        self.assertEqual(change_case_rules.classify_domain_coverage(v, 0, 10, edge_margin_pct=0.50), self.NEAR)
+
+    def test_zero_width_range_only_the_constant_is_within(self):
+        self.assertEqual(change_case_rules.classify_domain_coverage(5, 5, 5), self.WITHIN)
+        self.assertEqual(change_case_rules.classify_domain_coverage(5.001, 5, 5), self.OUTSIDE)
+
+    def test_invalid_arguments_raise(self):
+        with self.assertRaises(ValueError):
+            change_case_rules.classify_domain_coverage(1, 0, 10, edge_margin_pct=-0.1)
+        with self.assertRaises(ValueError):
+            change_case_rules.classify_domain_coverage(1, 10, 0)
+
+    def test_compute_historical_ranges(self):
+        rows = [{"features": {"a": 1, "b": 10}}, {"features": {"a": 3, "b": 5}}]
+        self.assertEqual(change_case_rules.compute_historical_ranges(rows, ["a", "b"]),
+                         {"a": (1, 3), "b": (5, 10)})
+        with self.assertRaises(ValueError):
+            change_case_rules.compute_historical_ranges([], ["a"])
+
+    def test_candidate_status_is_worst_feature(self):
+        ranges = {"a": (0, 10), "b": (0, 10), "c": (0, 10)}
+        cov = change_case_rules.classify_candidate_domain_coverage({"a": 5, "b": 10.5, "c": 5}, ranges)
+        self.assertEqual(cov["status"], self.NEAR)
+        cov = change_case_rules.classify_candidate_domain_coverage({"a": 5, "b": 10.5, "c": 99}, ranges)
+        self.assertEqual(cov["status"], self.OUTSIDE)
+        self.assertEqual(cov["features"]["a"]["status"], self.WITHIN)
+        self.assertEqual(cov["features"]["b"]["status"], self.NEAR)
+        self.assertEqual(cov["features"]["c"]["status"], self.OUTSIDE)
+        cov = change_case_rules.classify_candidate_domain_coverage({"a": 1, "b": 2, "c": 3}, ranges)
+        self.assertEqual(cov["status"], self.WITHIN)
+
+    def test_note_never_claims_scientific_derivation(self):
+        note = change_case_rules.domain_coverage_note()
+        self.assertIn("heuristic", note)
+        self.assertIn("not a scientifically validated", note)
+        self.assertIn("10%", note)
+        self.assertIn("not derived from data or theory", note)
+
+
 if __name__ == "__main__":
     unittest.main()

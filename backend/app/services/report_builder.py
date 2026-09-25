@@ -85,8 +85,18 @@ def build_project_report(project: dict, backtest: dict, recommendations: list,
     return out_path
 
 
+INSUFFICIENT_EVIDENCE_STATEMENT = "Insufficient evidence to establish predictive performance."
+
+
+DOMAIN_COVERAGE_LABELS = {
+    "within_historical_domain": "Within historical range",
+    "near_edge_of_domain": "Near edge of historical range",
+    "outside_historical_domain": "Outside historical range",
+}
+
+
 def build_qualification_report(change_case: dict, ranked_results: list, n_historical_rows: int,
-                                organization_name: str) -> str:
+                                organization_name: str, data_quality: dict = None) -> str:
     """The Phase 2 commercial deliverable: the qualification diagnostic
     report. Deliberately explicit that this is an ANALYSIS deliverable
     (a ranked, confidence-scored shortlist and a recommended validation
@@ -116,17 +126,23 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
     if not ranked_results:
         doc.add_paragraph("No candidates ranked yet.")
     else:
-        table = doc.add_table(rows=1, cols=3)
+        show_coverage = any(r.get("domain_coverage") for r in ranked_results)
+        table = doc.add_table(rows=1, cols=4 if show_coverage else 3)
         table.style = "Light Grid Accent 1"
         hdr = table.rows[0].cells
         hdr[0].text = "Candidate"
         hdr[1].text = "Predicted qualification probability"
         hdr[2].text = "Uncertainty (std)"
+        if show_coverage:
+            hdr[3].text = "Historical data coverage"
         for r in ranked_results:
             row = table.add_row().cells
             row[0].text = r["candidate_name"]
             row[1].text = f"{r['predicted_probability']:.0%}"
             row[2].text = f"{r['uncertainty_std']:.3f}"
+            if show_coverage:
+                cov = r.get("domain_coverage")
+                row[3].text = DOMAIN_COVERAGE_LABELS[cov["status"]] if cov else "Not assessed"
 
         doc.add_heading("Recommended Validation Experiments", level=1)
         for r in ranked_results:
@@ -134,12 +150,52 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
             p.add_run(f"{r['candidate_name']}: ").bold = True
             p.add_run(r["recommended_experiment"])
 
+    coverage_items = [r for r in ranked_results if r.get("domain_coverage")]
+    if coverage_items:
+        doc.add_heading("Historical range coverage", level=1)
+        for r in coverage_items:
+            cov = r["domain_coverage"]
+            flagged = [(col, f) for col, f in cov["features"].items()
+                       if f["status"] != "within_historical_domain"]
+            if not flagged:
+                continue
+            p = doc.add_paragraph(style="List Bullet")
+            p.add_run(f"{r['candidate_name']}: ").bold = True
+            p.add_run(
+                "prediction is an extrapolation beyond the historical data -- "
+                + "; ".join(
+                    f"{col} = {f['value']} is {DOMAIN_COVERAGE_LABELS[f['status']].lower()} "
+                    f"({f['historical_min']} to {f['historical_max']})"
+                    for col, f in flagged
+                ) + "."
+            )
+        doc.add_paragraph(coverage_items[0]["domain_coverage"]["note"]).runs[0].font.size = Pt(9)
+
     doc.add_heading("Basis for this analysis", level=1)
-    doc.add_paragraph(
-        f"Predictions are based on {n_historical_rows} historical qualification "
-        "records supplied by the customer, using a Bayesian surrogate model with "
-        "calibrated uncertainty -- not a heuristic score."
-    )
+    if data_quality and data_quality["status"] == "insufficient":
+        # Never claim a model basis the data cannot support.
+        doc.add_paragraph(INSUFFICIENT_EVIDENCE_STATEMENT)
+    else:
+        doc.add_paragraph(
+            f"Predictions are based on {n_historical_rows} historical qualification "
+            "records supplied by the customer, using a Bayesian surrogate model with "
+            "calibrated uncertainty -- not a heuristic score."
+        )
+
+    if data_quality:
+        doc.add_heading("Data quality and evidence basis", level=1)
+        doc.add_paragraph(f"Dataset version: {data_quality['dataset_id']}")
+        doc.add_paragraph(f"Data quality status: {data_quality['status']}")
+        doc.add_paragraph(
+            f"Historical records: {data_quality['row_count']} "
+            f"({data_quality['distinct_rows']} distinct after removing "
+            f"{data_quality['duplicate_rows']} exact duplicate rows)."
+        )
+        if data_quality["status"] == "insufficient":
+            doc.add_paragraph(
+                "Too few distinct historical records were supplied to support a "
+                "reliable ranking, so no candidate ranking was produced from this dataset."
+            )
 
     disclaimer = doc.add_paragraph()
     disclaimer.add_run(
