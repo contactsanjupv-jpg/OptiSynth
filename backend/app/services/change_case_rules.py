@@ -7,6 +7,7 @@ that actually matter (safety, data integrity, entitlement) from web/DB
 plumbing so they can't be silently bypassed by a route that forgets to
 call them.
 """
+import math
 from datetime import datetime, timezone
 
 from backend.app.schemas.errors import ValidationError
@@ -138,6 +139,42 @@ def check_can_trigger_ranking(historical_row_count: int, candidate_count: int) -
             "Add at least one candidate substitute before requesting a ranking.",
             field="candidates",
         )
+
+def check_candidate_features_finite(candidate_features: dict, candidate_name: str = None) -> None:
+    """Priority 7A (B2): NaN and +/-Infinity are technically valid Python
+    floats -- float('nan') and float('inf') succeed, and Python's json
+    decoder accepts the literal tokens NaN/Infinity by default -- so
+    neither float() coercion nor Pydantic's `dict[str, float]` type check
+    rejects them. Without this check they would silently reach the GP,
+    where sklearn raises a raw, unhandled ValueError ('Input X contains
+    NaN') instead of a clean application error. Mirrors
+    check_candidate_features_complete's per-candidate clarity."""
+    non_finite = [col for col, v in candidate_features.items() if not math.isfinite(v)]
+    if non_finite:
+        who = f"Candidate '{candidate_name}'" if candidate_name else "This candidate"
+        raise ValidationError(
+            f"{who} has a non-finite value (NaN or Infinity) for feature(s): "
+            f"{', '.join(non_finite)}. Feature values must be finite numbers.",
+            field="features",
+        )
+
+
+def check_rows_are_finite(rows: list) -> None:
+    """Priority 7A (B2), defense-in-depth: a second, historical-data-side
+    check immediately before ranking, independent of ingestion's own
+    finite-value rejection -- protects against any row that reached
+    storage before this check existed, or by any other path. `rows` is a
+    list of {"features": {col: float}, "target_value": float}."""
+    for r in rows:
+        non_finite = [col for col, v in r["features"].items() if not math.isfinite(v)]
+        if non_finite or not math.isfinite(r["target_value"]):
+            raise ValidationError(
+                "This dataset contains a non-finite value (NaN or Infinity) in a "
+                "historical row and cannot be used for ranking. Re-upload a "
+                "corrected dataset.",
+                field="dataset",
+            )
+
 
 def check_candidate_features_complete(feature_columns: list, candidate_features: dict,
                                        candidate_name: str = None) -> None:

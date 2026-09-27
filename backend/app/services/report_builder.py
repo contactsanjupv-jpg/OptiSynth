@@ -96,7 +96,8 @@ DOMAIN_COVERAGE_LABELS = {
 
 
 def build_qualification_report(change_case: dict, ranked_results: list, n_historical_rows: int,
-                                organization_name: str, data_quality: dict = None) -> str:
+                                organization_name: str, data_quality: dict = None,
+                                model_quality: dict = None, uncertainty_calibration: dict = None) -> str:
     """The Phase 2 commercial deliverable: the qualification diagnostic
     report. Deliberately explicit that this is an ANALYSIS deliverable
     (a ranked, confidence-scored shortlist and a recommended validation
@@ -171,15 +172,53 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
             )
         doc.add_paragraph(coverage_items[0]["domain_coverage"]["note"]).runs[0].font.size = Pt(9)
 
+    if model_quality:
+        doc.add_heading("Model performance evidence", level=1)
+        if "error" in model_quality:
+            doc.add_paragraph(
+                "Cross-validated model-quality metrics could not be computed for this "
+                f"dataset: {model_quality['error']}"
+            )
+        else:
+            doc.add_paragraph(
+                f"Cross-validated on this dataset's own historical data "
+                f"({model_quality['n_folds_used']}-fold, {model_quality['n_points_scored']} held-out "
+                f"points): R\u00b2 = {model_quality['r2_score']}, mean absolute error = "
+                f"{model_quality['mean_absolute_error']} ({model_quality['prediction_accuracy_pct']}% of "
+                f"held-out predictions fell within {model_quality['accuracy_tolerance_band']}, a "
+                f"tolerance band of 10% of this dataset's observed target range)."
+            )
+            if uncertainty_calibration and "error" not in uncertainty_calibration:
+                doc.add_paragraph(
+                    "Predicted-uncertainty calibration: correlation between predicted uncertainty "
+                    f"and actual held-out error = {uncertainty_calibration['sigma_error_correlation']} "
+                    "(positive means higher predicted uncertainty is associated with larger actual "
+                    f"error); {uncertainty_calibration['within_1sigma_pct']}% of held-out points fell "
+                    f"within 1 predicted standard deviation, "
+                    f"{uncertainty_calibration['within_2sigma_pct']}% within 2."
+                )
+            elif uncertainty_calibration and "error" in uncertainty_calibration:
+                doc.add_paragraph(
+                    "Uncertainty calibration could not be evaluated for this dataset: "
+                    f"{uncertainty_calibration['error']}"
+                )
+
     doc.add_heading("Basis for this analysis", level=1)
     if data_quality and data_quality["status"] == "insufficient":
         # Never claim a model basis the data cannot support.
         doc.add_paragraph(INSUFFICIENT_EVIDENCE_STATEMENT)
     else:
+        # Priority 7B: this used to assert "with calibrated uncertainty" as
+        # an unconditional fact. It no longer does -- whether the model's
+        # uncertainty is actually calibrated is a measured, dataset-specific
+        # result (see "Model performance evidence" above), not a property
+        # of the model class itself, and this sentence must not claim more
+        # than the evidence supports.
         doc.add_paragraph(
             f"Predictions are based on {n_historical_rows} historical qualification "
-            "records supplied by the customer, using a Bayesian surrogate model with "
-            "calibrated uncertainty -- not a heuristic score."
+            "records supplied by the customer, using a Gaussian process (Bayesian) "
+            "surrogate model. See 'Model performance evidence' above for this "
+            "dataset's own cross-validated accuracy and uncertainty-calibration results."
         )
 
     if data_quality:

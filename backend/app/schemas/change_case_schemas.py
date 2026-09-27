@@ -95,12 +95,20 @@ class RecommendedExperimentResponse(BaseModel):
 class RankResultResponse(BaseModel):
     """Response for POST /rank -- every candidate's fresh prediction plus
     its recommended validation experiment, best-ranked first."""
+    # "model_quality" legitimately starts with Pydantic's reserved "model_"
+    # prefix (used for its own methods like model_dump); this field is not
+    # one of those methods, so the collision is silenced rather than
+    # renaming a name already used consistently across the service/report.
+    model_config = {"protected_namespaces": ()}
+
     candidate_id: int
     candidate_name: str
     predicted_probability: float
     uncertainty_std: float
     recommended_experiment: str
     domain_coverage: dict | None = None
+    model_quality: dict | None = None
+    uncertainty_calibration: dict | None = None
 
 
 class OutcomeResponse(BaseModel):

@@ -282,5 +282,40 @@ class TestClassifyDomainCoverage(unittest.TestCase):
         self.assertIn("not derived from data or theory", note)
 
 
+class TestFiniteValueChecks(unittest.TestCase):
+    """Priority 7A (B2): NaN and Infinity are technically valid Python
+    floats, so these checks exist specifically to reject them explicitly."""
+
+    def test_candidate_features_finite_rejects_nan(self):
+        with self.assertRaises(ValidationError):
+            change_case_rules.check_candidate_features_finite(
+                {"viscosity": float("nan"), "solids_pct": 61.0}, "Bad",
+            )
+
+    def test_candidate_features_finite_rejects_positive_and_negative_infinity(self):
+        with self.assertRaises(ValidationError):
+            change_case_rules.check_candidate_features_finite({"viscosity": float("inf")}, "Bad")
+        with self.assertRaises(ValidationError):
+            change_case_rules.check_candidate_features_finite({"viscosity": float("-inf")}, "Bad")
+
+    def test_candidate_features_finite_allows_ordinary_values(self):
+        change_case_rules.check_candidate_features_finite({"viscosity": 460.0, "solids_pct": 61.0})  # must not raise
+
+    def test_rows_are_finite_rejects_nan_feature_and_nan_target(self):
+        with self.assertRaises(ValidationError):
+            change_case_rules.check_rows_are_finite(
+                [{"features": {"viscosity": float("nan")}, "target_value": 75.0}]
+            )
+        with self.assertRaises(ValidationError):
+            change_case_rules.check_rows_are_finite(
+                [{"features": {"viscosity": 460.0}, "target_value": float("inf")}]
+            )
+
+    def test_rows_are_finite_allows_ordinary_rows(self):
+        change_case_rules.check_rows_are_finite(
+            [{"features": {"viscosity": 460.0}, "target_value": 75.0}]
+        )  # must not raise
+
+
 if __name__ == "__main__":
     unittest.main()

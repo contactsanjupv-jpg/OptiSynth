@@ -27,8 +27,30 @@ class TestApi(unittest.TestCase):
         os.environ["SECRET_KEY"] = "test-secret-key-not-for-production"
         os.environ["PASSWORD_PEPPER"] = "test-password-pepper-not-for-production"
         os.environ["DATABASE_URL"] = f"sqlite:///{cls.test_dir}/test.db"
-        if os.path.exists(f"{cls.test_dir}/test.db"):
-            os.remove(f"{cls.test_dir}/test.db")
+
+        # `settings` and `database.engine` are both module-level singletons,
+        # constructed the FIRST time anything imports them -- which, when
+        # this file runs alongside test_security.py/test_sessions.py (both
+        # of which import `settings` at their own module level), happens
+        # during unittest's discovery/import phase, BEFORE this setUpClass
+        # ever runs. Setting the env var above is therefore too late to
+        # affect the already-constructed `settings.DATABASE_URL` or the
+        # engine `database.py` built from it at its own first import --
+        # explicitly rebind both here so this test always uses its own
+        # isolated database file, regardless of module import order.
+        from backend.app.config.settings import settings
+        from backend.app.config import database
+        settings.DATABASE_URL = os.environ["DATABASE_URL"]
+        database.engine = database._make_engine()
+        # Regression guard: this exact class of bug (engine silently bound
+        # to the real default database instead of this test's isolated
+        # file, due to import order with other test modules) must never
+        # reoccur silently -- fail loudly and immediately if it does.
+        assert str(database.engine.url).endswith(f"{cls.test_dir}/test.db"), (
+            f"Test isolation failure: engine bound to {database.engine.url!r}, "
+            f"not this suite's isolated database file ({cls.test_dir}/test.db). "
+            f"This suite must never read or write the real default database."
+        )
 
         from fastapi.testclient import TestClient
         from backend.app.config.database import init_db

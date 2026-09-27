@@ -15,6 +15,7 @@ fully separable. Same security discipline as the original:
 
 import csv
 import io
+import math
 import os
 import secrets
 
@@ -115,6 +116,22 @@ def ingest_qualification_csv(
                 for col in feature_columns
             }
             target_value = float(raw_row[target_metric])
+
+            # Priority 7A (B2): float() accepts the literal strings
+            # "nan"/"inf"/"infinity" without error, so a NaN or Infinity
+            # cell would otherwise be silently treated as ordinary numeric
+            # data. Reject it explicitly, in the same per-row error path
+            # as a non-numeric cell, so it never enters the dataset as if
+            # it were a valid numeric value.
+            non_finite = [col for col, v in features.items() if not math.isfinite(v)]
+            if non_finite or not math.isfinite(target_value):
+                errors.append(
+                    {
+                        "row": i,
+                        "error": "Non-finite value (NaN or Infinity) in a required column.",
+                    }
+                )
+                continue
 
             rows_out.append(
                 {

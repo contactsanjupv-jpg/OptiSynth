@@ -113,6 +113,7 @@ def add_candidate(organization_id: int, change_case_id: int, name: str, features
     # fail later, opaquely, when ranking tries to read the missing feature.
     spec = json.loads(case["qualification_spec_json"])
     change_case_rules.check_candidate_features_complete(spec.get("feature_columns"), features, name)
+    change_case_rules.check_candidate_features_finite(features, name)
     candidate_id = candidate_repo.create_candidate(organization_id, change_case_id, name, features)
     return candidate_repo.get_candidate(organization_id, candidate_id)
 
@@ -184,6 +185,25 @@ def _assess_dataset_quality(spec: dict, dataset: dict, experiments: list) -> dic
     }
 
 
+def _compute_evidence_metrics(spec: dict, experiments: list) -> tuple:
+    """Priority 7B: cross-validated model-quality and uncertainty-
+    calibration metrics, recomputed here rather than persisted -- report
+    generation does not re-run ranking, so this mirrors
+    _assess_dataset_quality's own provenance discipline (computed fresh
+    from the SAME dataset version the report's predictions came from,
+    never a stored value) rather than duplicating rank_change_case's
+    already-tested logic in place."""
+    feature_columns = spec["feature_columns"]
+    X = np.array([[json.loads(e["features_json"])[col] for col in feature_columns] for e in experiments])
+    y = np.array([e["target_value"] for e in experiments])
+    from engine.facade import compute_model_metrics, compute_uncertainty_calibration
+    model_quality = compute_model_metrics(X, y)
+    uncertainty_calibration = (
+        compute_uncertainty_calibration(X, y) if "error" not in model_quality else None
+    )
+    return model_quality, uncertainty_calibration
+
+
 def rank_change_case(organization_id: int, change_case_id: int) -> list:
     """The paid diagnostic action: scores every named candidate against
     the change case's uploaded historical qualification data, writes a
@@ -234,9 +254,24 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
     # candidates up front, before any engine call, so a bad one is reported
     # cleanly rather than failing partway through ranking.
     for c in candidates:
+        candidate_features = json.loads(c["properties_json"])
         change_case_rules.check_candidate_features_complete(
-            feature_columns, json.loads(c["properties_json"]), c["candidate_name"],
+            feature_columns, candidate_features, c["candidate_name"],
         )
+        # Priority 7A (B2), defense-in-depth: reject non-finite candidate
+        # feature values here too, independent of add_candidate's own
+        # check, so malformed data can never reach the engine however it
+        # was stored.
+        change_case_rules.check_candidate_features_finite(candidate_features, c["candidate_name"])
+
+    # Priority 7A (B2), defense-in-depth: reject a non-finite historical
+    # row here too, independent of ingestion's own check, so a row that
+    # reached storage before this check existed (or by any other path)
+    # can never crash the GP with a raw sklearn exception.
+    change_case_rules.check_rows_are_finite([
+        {"features": json.loads(e["features_json"]), "target_value": e["target_value"]}
+        for e in experiments
+    ])
 
     historical_ranges = _historical_ranges(spec, experiments)  # same dataset the predictions are stamped with
 
@@ -274,6 +309,13 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
             "uncertainty_std": r["uncertainty_std"],
             "recommended_experiment": experiment_description,
             "domain_coverage": domain_coverage,
+            # Priority 7B: previously computed above and discarded. Same
+            # values for every candidate in this ranking call (they describe
+            # the dataset/model, not an individual candidate) -- attached
+            # per-result to match the existing shape (domain_coverage is
+            # likewise dataset-derived but repeated per-candidate).
+            "model_quality": model_quality,
+            "uncertainty_calibration": uncertainty_calibration,
         })
 
     return results
@@ -361,11 +403,20 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
 
     n_historical_rows = dataset["row_count"] if dataset else 0
     data_quality = None
+    model_quality = None
+    uncertainty_calibration = None
     if dataset:
         experiments = qualification_dataset_repo.list_experiments_for_dataset(organization_id, dataset["id"])
         spec = json.loads(case["qualification_spec_json"])
         data_quality = _assess_dataset_quality(spec, dataset, experiments)
         change_case_rules.check_can_generate_report(data_quality["status"])
+        if data_quality["status"] != "insufficient":
+            # Priority 7B: only compute evidence metrics when the report is
+            # actually claiming a model basis (the "insufficient" branch
+            # already states INSUFFICIENT_EVIDENCE_STATEMENT and skips any
+            # model claim, so showing calibration numbers there would be
+            # contradictory, not additive).
+            model_quality, uncertainty_calibration = _compute_evidence_metrics(spec, experiments)
 
     ranked_results = []
     for c in candidates:
@@ -385,4 +436,5 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
 
     return report_builder.build_qualification_report(
         case, ranked_results, n_historical_rows, organization_name, data_quality=data_quality,
+        model_quality=model_quality, uncertainty_calibration=uncertainty_calibration,
     )
