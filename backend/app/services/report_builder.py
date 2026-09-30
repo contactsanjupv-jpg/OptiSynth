@@ -107,9 +107,160 @@ DOMAIN_COVERAGE_LABELS = {
 }
 
 
+DIRECTION_PHRASE = {"maximize": "at or above", "minimize": "at or below"}
+
+HUMAN_DECISION_STATEMENT = (
+    "This analysis does not qualify any candidate. It estimates, organises the available "
+    "evidence and recommends physical validation. The decision to qualify a substitute rests "
+    "with the customer's authorised qualification personnel, based on physical validation "
+    "results and the customer's own qualification requirements."
+)
+
+
+def _kv_table(doc, rows):
+    table = doc.add_table(rows=0, cols=2)
+    table.style = "Light Grid Accent 1"
+    for label, value in rows:
+        cells = table.add_row().cells
+        cells[0].text = label
+        cells[1].text = value
+    return table
+
+
+def _add_requirement_and_record(doc, ctx):
+    """Requirement analysed + analysis record: states what the model-estimated
+    probability actually refers to, and exactly which case/dataset/model/inputs
+    produced this report, so the document is traceable without the software."""
+    spec = ctx["spec"]
+    doc.add_heading("Requirement and analysis record", level=1)
+    phrase = DIRECTION_PHRASE.get(spec.get("direction"), spec.get("direction", ""))
+    doc.add_paragraph(
+        f"Requirement analysed: {spec['target_metric']} {phrase} {spec['target_value']}. "
+        f"'Model-estimated probability' in this report is the model's estimate that a candidate's "
+        f"{spec['target_metric']} meets this requirement, given the candidate inputs and the "
+        "historical data listed below. It is not a validated qualification probability."
+    )
+    dataset = ctx.get("dataset")
+    rows = [
+        ("Change case ID", str(ctx["change_case_id"])),
+        ("Report generated (UTC)", ctx["generated_at_utc"]),
+        ("Input features modelled", ", ".join(spec["feature_columns"])),
+    ]
+    if dataset:
+        rows += [
+            ("Historical dataset", f"Version {dataset['id']}: {dataset['original_filename']}"),
+            ("Dataset uploaded (UTC)", str(dataset["created_at"])),
+            ("Records ingested from that file", str(dataset["row_count"])),
+        ]
+    else:
+        rows.append(("Historical dataset", "None uploaded"))
+    versions = ctx.get("model_versions") or []
+    rows.append(("Model", "Gaussian process surrogate; version(s): " + (", ".join(versions) if versions else "no ranking run yet")))
+    if ctx.get("ranked_at_utc"):
+        rows.append(("Latest ranking run (UTC)", ctx["ranked_at_utc"]))
+    _kv_table(doc, rows)
+
+    cands = ctx.get("candidates") or []
+    if cands:
+        doc.add_paragraph("Candidate inputs used for the estimates (as supplied by the customer):")
+        table = doc.add_table(rows=1, cols=1 + len(spec["feature_columns"]))
+        table.style = "Light Grid Accent 1"
+        hdr = table.rows[0].cells
+        hdr[0].text = "Candidate"
+        for i, col in enumerate(spec["feature_columns"], start=1):
+            hdr[i].text = col
+        for c in cands:
+            row = table.add_row().cells
+            row[0].text = c["candidate_name"]
+            for i, col in enumerate(spec["feature_columns"], start=1):
+                row[i].text = str(c["properties"].get(col, ""))
+
+
+def _evidence_gaps(ranked_results, ctx):
+    """Evidence gaps stated from facts already in the system -- no new
+    heuristics or thresholds. Returns a list of plain-language bullets."""
+    spec = ctx["spec"]
+    gaps = []
+    for r in ranked_results:
+        cov = r.get("domain_coverage")
+        if not cov:
+            continue
+        for col, f in cov["features"].items():
+            if f["status"] != "within_historical_domain":
+                gaps.append(
+                    f"{r['candidate_name']}: no historical evidence at {col} = {f['value']} "
+                    f"(observed {f['historical_min']} to {f['historical_max']}); the estimate is an extrapolation."
+                )
+    unranked = [c["candidate_name"] for c in ctx.get("candidates", []) if not c.get("has_prediction")]
+    if unranked:
+        gaps.append("Not yet ranked: " + ", ".join(unranked) + ".")
+    with_outcome = {o["candidate_name"] for o in ctx.get("outcomes", [])}
+    no_outcome = [c["candidate_name"] for c in ctx.get("candidates", []) if c["candidate_name"] not in with_outcome]
+    if no_outcome:
+        gaps.append("No physical validation outcome has been recorded for: " + ", ".join(no_outcome) + ".")
+    gaps += [
+        "Only these input features are modelled: " + ", ".join(spec["feature_columns"]) +
+        ". Any other property relevant to qualification is not evaluated by this analysis.",
+        f"Only one requirement is analysed ({spec['target_metric']}). Other qualification requirements are not evaluated.",
+        "Units of measure and test conditions are not recorded or verified by this system; the customer's "
+        "historical data is used as supplied.",
+        "Row-level source provenance (source document, page or table) is not recorded for the historical data.",
+        "Range coverage is checked per feature, not jointly: a candidate inside every individual range can "
+        "still lie in a region of the combined input space with no historical evidence.",
+    ]
+    return gaps
+
+
+def _add_evidence_gaps(doc, ranked_results, ctx):
+    doc.add_heading("Evidence gaps", level=1)
+    for g in _evidence_gaps(ranked_results, ctx):
+        doc.add_paragraph(g, style="List Bullet")
+
+
+def _add_recorded_outcomes(doc, ctx):
+    doc.add_heading("Recorded physical validation outcomes", level=1)
+    outcomes = ctx.get("outcomes") or []
+    if not outcomes:
+        doc.add_paragraph("No physical validation outcomes have been recorded for this change case.")
+        return
+    table = doc.add_table(rows=1, cols=5)
+    table.style = "Light Grid Accent 1"
+    hdr = table.rows[0].cells
+    hdr[0].text = "Candidate"
+    hdr[1].text = "Model-estimated probability (latest ranking)"
+    hdr[2].text = "Recorded result"
+    hdr[3].text = "Recorded as meeting requirement"
+    hdr[4].text = "Recorded (UTC)"
+    for o in outcomes:
+        row = table.add_row().cells
+        row[0].text = o["candidate_name"]
+        row[1].text = f"{o['model_probability']:.0%}" if o.get("model_probability") is not None else "Not ranked"
+        row[2].text = o["actual_result"] or ""
+        row[3].text = "Yes" if o["passed_spec"] else "No"
+        row[4].text = str(o["recorded_at"])
+    doc.add_paragraph(
+        "Outcomes are entered by the customer's team and are append-only records; they are shown "
+        "next to the model estimate for comparison and do not alter it."
+    ).runs[0].font.size = Pt(9)
+
+
+def _add_human_decision_block(doc):
+    doc.add_heading("Human qualification decision", level=1)
+    doc.add_paragraph(HUMAN_DECISION_STATEMENT)
+    _kv_table(doc, [
+        ("Decision (qualify / do not qualify / further testing)", ""),
+        ("Candidate", ""),
+        ("Basis and reference to physical test records", ""),
+        ("Decision-maker (name, role)", ""),
+        ("Date", ""),
+        ("Signature", ""),
+    ])
+
+
 def build_qualification_report(change_case: dict, ranked_results: list, n_historical_rows: int,
                                 organization_name: str, data_quality: dict = None,
-                                model_quality: dict = None, uncertainty_calibration: dict = None) -> str:
+                                model_quality: dict = None, uncertainty_calibration: dict = None,
+                                audit_context: dict = None) -> str:
     """The Phase 2 commercial deliverable: the qualification diagnostic
     report. Deliberately explicit that this is an ANALYSIS deliverable
     (a ranked shortlist ordered by model-estimated probability and a
@@ -134,6 +285,9 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
     meta.add_run(f"Trigger: {change_case['trigger_type']}").font.size = Pt(10)
     if change_case.get("restricted_substance"):
         meta.add_run(f" ({change_case['restricted_substance']})").font.size = Pt(10)
+
+    if audit_context:
+        _add_requirement_and_record(doc, audit_context)
 
     doc.add_heading("Ranked Candidates", level=1)
     if not ranked_results:
@@ -231,6 +385,11 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
                     f"{uncertainty_calibration['error']}"
                 )
 
+    if audit_context:
+        _add_evidence_gaps(doc, ranked_results, audit_context)
+        _add_recorded_outcomes(doc, audit_context)
+        _add_human_decision_block(doc)
+
     doc.add_heading("Basis for this analysis", level=1)
     if data_quality and data_quality["status"] == "insufficient":
         # Never claim a model basis the data cannot support.
@@ -244,7 +403,7 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
         # than the evidence supports.
         doc.add_paragraph(
             f"Predictions are based on {n_historical_rows} historical qualification "
-            "records supplied by the customer, using a Gaussian process (Bayesian) "
+            "records ingested from the customer-supplied file, using a Gaussian process (Bayesian) "
             "surrogate model. See 'Model performance evidence' above for this "
             "dataset's own cross-validated accuracy and uncertainty-calibration results."
         )

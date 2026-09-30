@@ -4173,6 +4173,78 @@ class TestChangeCaseApi(unittest.TestCase):
         self.assertNotIn("Predicted qualification probability", text)
         self.assertNotIn("confidence-scored", text)
         self.assertIn("ranked shortlist ordered by model-estimated probability", text)
+    # -----------------------------------------------------------------
+    # Report as a traceable decision record: requirement analysed,
+    # analysis record, evidence gaps, recorded outcomes, human decision.
+    # -----------------------------------------------------------------
+    def test_report_states_requirement_and_analysis_record(self):
+        client, case_id = self._c1_case("rec-1@coatings.com", "Rec One Coatings")
+        client.post(f"/api/change-cases/{case_id}/rank")
+        text = self._docx_text(client.post(f"/api/change-cases/{case_id}/report").content)
+        self.assertIn("Requirement and analysis record", text)
+        self.assertIn("Requirement analysed: adhesion_score at or above 80.0", text)
+        self.assertIn(f"Change case ID\n{case_id}", text)
+        self.assertIn("gp-rank-v1", text)  # model version
+        self.assertIn("viscosity, solids_pct", text)  # features modelled
+        self.assertIn("Report generated (UTC)", text)
+        self.assertIn("Dataset uploaded (UTC)", text)
+        for name in ("Resin A", "Far", "Edge"):
+            self.assertIn(name, text)  # candidate inputs listed
+
+    def test_report_lists_evidence_gaps_from_domain_coverage(self):
+        client, case_id = self._c1_case("gap-1@coatings.com", "Gap One Coatings")
+        client.post(f"/api/change-cases/{case_id}/rank")
+        text = self._docx_text(client.post(f"/api/change-cases/{case_id}/report").content)
+        self.assertIn("Evidence gaps", text)
+        self.assertIn("Far: no historical evidence at viscosity = 500", text)
+        self.assertIn("No physical validation outcome has been recorded for", text)
+        self.assertIn("Units of measure and test conditions are not recorded or verified", text)
+        self.assertIn("Row-level source provenance", text)
+
+    def test_report_shows_recorded_outcome_next_to_model_estimate_without_changing_it(self):
+        client, case_id = self._c1_case("out-1@coatings.com", "Out One Coatings")
+        ranked = {x["candidate_name"]: x for x in client.post(f"/api/change-cases/{case_id}/rank").json()}
+        cands = {c["candidate_name"]: c for c in client.get(f"/api/change-cases/{case_id}/candidates").json()}
+        r = client.post(
+            f"/api/change-cases/{case_id}/candidates/{cands['Far']['id']}/outcome",
+            json={"actual_result": "measured 61 on 3 panels", "passed_spec": False},
+        )
+        self.assertEqual(r.status_code, 201)
+        text = self._docx_text(client.post(f"/api/change-cases/{case_id}/report").content)
+        self.assertIn("Recorded physical validation outcomes", text)
+        self.assertIn("measured 61 on 3 panels", text)
+        self.assertIn("Recorded as meeting requirement", text)
+        self.assertIn(f"{ranked['Far']['predicted_probability']:.0%}", text)
+        after = {x["candidate_name"]: x for x in client.get(f"/api/change-cases/{case_id}/candidates").json()}
+        self.assertEqual(after["Far"]["latest_prediction"]["predicted_probability"],
+                         ranked["Far"]["predicted_probability"])
+        self.assertIn("No physical validation outcome has been recorded for", text)  # other candidates
+
+    def test_report_has_blank_human_decision_block_and_never_claims_qualification(self):
+        client, case_id = self._c1_case("hum-1@coatings.com", "Hum One Coatings")
+        client.post(f"/api/change-cases/{case_id}/rank")
+        text = self._docx_text(client.post(f"/api/change-cases/{case_id}/report").content)
+        self.assertIn("Human qualification decision", text)
+        self.assertIn("This analysis does not qualify any candidate.", text)
+        self.assertIn("Decision-maker (name, role)", text)
+        self.assertIn("Signature", text)
+        for banned in ("is qualified", "are qualified", "has been qualified", "qualification confidence"):
+            self.assertNotIn(banned, text)
+
+    def test_report_before_any_ranking_still_builds_with_record_and_gaps(self):
+        client, case_id = self._c1_case("pre-1@coatings.com", "Pre One Coatings")
+        r = client.post(f"/api/change-cases/{case_id}/report")
+        self.assertEqual(r.status_code, 200)
+        text = self._docx_text(r.content)
+        self.assertIn("no ranking run yet", text)
+        self.assertIn("Not yet ranked:", text)
+
+    def test_report_record_is_tenant_scoped(self):
+        client, case_id = self._c1_case("ten-1@coatings.com", "Ten One Coatings")
+        client.post(f"/api/change-cases/{case_id}/rank")
+        other = self.client_factory()
+        self._signup(other, "ten-2@coatings.com", "Ten Two Coatings")
+        self.assertEqual(other.post(f"/api/change-cases/{case_id}/report").status_code, 404)
 if __name__ == "__main__":
     unittest.main()
 

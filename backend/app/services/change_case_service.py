@@ -443,7 +443,55 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
         })
     ranked_results.sort(key=lambda r: r["predicted_probability"], reverse=True)
 
+    audit_context = _build_report_audit_context(
+        organization_id, change_case_id, case, candidates, dataset,
+    )
     return report_builder.build_qualification_report(
         case, ranked_results, n_historical_rows, organization_name, data_quality=data_quality,
         model_quality=model_quality, uncertainty_calibration=uncertainty_calibration,
+        audit_context=audit_context,
     )
+
+
+def _build_report_audit_context(organization_id: int, change_case_id: int, case: dict,
+                                 candidates: list, dataset) -> dict:
+    """Read-only facts for the report's requirement/analysis record, evidence
+    gaps and recorded-outcomes sections. Everything here is already stored
+    (spec, dataset row, prediction rows, candidate inputs, outcome rows);
+    nothing new is computed or persisted, and no threshold is introduced.
+    Outcomes are shown NEXT TO the model estimate for comparison only."""
+    from datetime import datetime, timezone
+    spec = json.loads(case["qualification_spec_json"])
+    predictions = [c["latest_prediction"] for c in candidates if c.get("latest_prediction")]
+    name_by_id = {c["id"]: c["candidate_name"] for c in candidates}
+    prob_by_id = {
+        c["id"]: c["latest_prediction"]["predicted_probability"]
+        for c in candidates if c.get("latest_prediction")
+    }
+    outcomes = [
+        {
+            "candidate_name": name_by_id.get(o["candidate_id"], "Unknown candidate"),
+            "model_probability": prob_by_id.get(o["candidate_id"]),
+            "actual_result": o["actual_result"],
+            "passed_spec": bool(o["passed_spec"]),
+            "recorded_at": o["created_at"],
+        }
+        for o in candidate_repo.list_outcomes_for_change_case(organization_id, change_case_id)
+    ]
+    return {
+        "change_case_id": change_case_id,
+        "spec": spec,
+        "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        "dataset": dataset,
+        "model_versions": sorted({p["model_version"] for p in predictions}),
+        "ranked_at_utc": max((p["created_at"] for p in predictions), default=None),
+        "candidates": [
+            {
+                "candidate_name": c["candidate_name"],
+                "properties": c["properties"],
+                "has_prediction": c.get("latest_prediction") is not None,
+            }
+            for c in candidates
+        ],
+        "outcomes": outcomes,
+    }
