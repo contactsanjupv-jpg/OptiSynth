@@ -130,3 +130,63 @@ class TestQualificationReportModelEvidence(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestQualificationReportDecisionSupport(unittest.TestCase):
+    """C1: 'Model-estimated probability' wording and the 'Decision support'
+    column/explanation. Table cells are read too (the 7B helper above only
+    reads paragraphs)."""
+
+    def _case(self):
+        return {"name": "PFHxA replacement", "trigger_type": "regulatory_restriction",
+                "restricted_substance": "PFHxA"}
+
+    def _text(self, path):
+        doc = Document(path)
+        parts = [p.text for p in doc.paragraphs]
+        for table in doc.tables:
+            for row in table.rows:
+                parts.extend(cell.text for cell in row.cells)
+        os.remove(path)
+        return "\n".join(parts)
+
+    def _dq(self):
+        return {"status": "valid", "dataset_id": 1, "row_count": 15,
+                "distinct_rows": 15, "duplicate_rows": 0, "constant_columns": []}
+
+    def _outside_result(self):
+        from backend.app.services import change_case_rules as rules
+        cov = rules.classify_candidate_domain_coverage({"viscosity": 500}, {"viscosity": (450, 464)})
+        return {
+            "candidate_name": "Far", "predicted_probability": 1.0, "uncertainty_std": 2.261,
+            "recommended_experiment": "Run a test.", "domain_coverage": cov,
+            "decision_support": rules.derive_decision_support(cov),
+        }
+
+    def test_outside_candidate_shows_model_estimate_and_requires_validation(self):
+        path = build_qualification_report(self._case(), [self._outside_result()], 15, "Acme",
+                                          data_quality=self._dq())
+        text = self._text(path)
+        self.assertIn("Model-estimated probability", text)
+        self.assertIn("Decision support", text)
+        self.assertIn("Requires validation", text)
+        self.assertIn("Outside historical range", text)
+        self.assertIn("100%", text)  # raw probability shown unchanged
+        self.assertIn("2.261", text)
+        self.assertIn("not a validated qualification probability", text)
+        self.assertIn("'Evidence-supported' does not mean qualified", text)
+
+    def test_old_wording_removed(self):
+        path = build_qualification_report(self._case(), [self._outside_result()], 15, "Acme",
+                                          data_quality=self._dq())
+        text = self._text(path)
+        self.assertNotIn("Predicted qualification probability", text)
+        self.assertNotIn("confidence-scored", text)
+        self.assertIn("ranked shortlist ordered by model-estimated probability", text)
+
+    def test_results_without_decision_support_omit_the_column(self):
+        r = self._outside_result()
+        r["decision_support"] = None
+        path = build_qualification_report(self._case(), [r], 15, "Acme", data_quality=self._dq())
+        text = self._text(path)
+        self.assertNotIn("Decision support", text)
+        self.assertIn("Model-estimated probability", text)

@@ -16,13 +16,28 @@ import {
   rankChangeCase, recordOutcome, generateQualificationReport,
 } from "@/lib/api";
 import { ApiRequestError } from "@/lib/api/http";
-import type { ChangeCase, Candidate } from "@/lib/api/change-cases";
+import type { ChangeCase, Candidate, DecisionSupport, DomainStatus } from "@/lib/api/change-cases";
 
-function probabilityTone(p: number): "success" | "warning" | "danger" {
-  if (p >= 0.7) return "success";
-  if (p >= 0.35) return "warning";
-  return "danger";
+// The model-estimated probability alone must never produce an approval-style
+// (green) treatment: a candidate far outside the historical range can still
+// receive ~100%. Tone is driven by decision support, and none of the tones
+// used here is the "success" (green) tone.
+function decisionTone(ds: DecisionSupport | null): "neutral" | "accent" | "warning" | "danger" {
+  if (!ds) return "warning"; // prediction exists but no decision-support signal: treat as unverified
+  if (ds.status === "requires_validation") return "danger";
+  if (ds.status === "caution") return "warning";
+  return "accent"; // evidence_supported: informational only, still requires physical validation
 }
+
+const DOMAIN_STATUS_LABEL: Record<DomainStatus, string> = {
+  within_historical_domain: "Within observed range",
+  near_edge_of_domain: "Near edge of observed range",
+  outside_historical_domain: "Outside observed range",
+};
+
+const MODEL_ESTIMATE_NOTE =
+  "Model-estimated probability is the model's output given the supplied historical data. " +
+  "It is not a validated qualification probability.";
 
 export default function ChangeCaseDetailPage() {
   const params = useParams();
@@ -194,8 +209,8 @@ export default function ChangeCaseDetailPage() {
                 </div>
                 {c.latest_prediction && (
                   <div style={{ textAlign: "right" }}>
-                    <Badge tone={probabilityTone(c.latest_prediction.predicted_probability)}>
-                      {Math.round(c.latest_prediction.predicted_probability * 100)}% predicted
+                    <Badge tone={decisionTone(c.decision_support)}>
+                      Model estimate {Math.round(c.latest_prediction.predicted_probability * 100)}%
                     </Badge>
                     <div style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)", marginTop: 4 }}>
                       uncertainty (std): {c.latest_prediction.uncertainty_std.toFixed(1)}
@@ -203,6 +218,23 @@ export default function ChangeCaseDetailPage() {
                   </div>
                 )}
               </div>
+              {c.latest_prediction && (
+                <div style={{ marginTop: 8, fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>
+                  <div>
+                    Historical domain:{" "}
+                    {c.domain_coverage ? DOMAIN_STATUS_LABEL[c.domain_coverage.status] : "Not determined"}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                    <span>Decision support:</span>
+                    <Badge tone={decisionTone(c.decision_support)}>
+                      {c.decision_support?.label ?? "Requires validation"}
+                    </Badge>
+                  </div>
+                  {c.decision_support && (
+                    <div style={{ marginTop: 4, color: "var(--color-text-tertiary)" }}>{c.decision_support.statement}</div>
+                  )}
+                </div>
+              )}
               {c.latest_prediction && (
                 <div style={{ marginTop: 8 }}>
                   {outcomeCandidateId === c.id ? (
@@ -228,6 +260,12 @@ export default function ChangeCaseDetailPage() {
             </div>
           ))}
 
+          {candidates && candidates.some((c) => c.latest_prediction) && (
+            <p style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)", marginTop: 12 }}>
+              {MODEL_ESTIMATE_NOTE}
+            </p>
+          )}
+
           <div style={{ marginTop: 16 }}>
             <Button variant="primary" onClick={handleRank} loading={ranking} disabled={!candidates || candidates.length === 0}>
               Run ranking
@@ -238,8 +276,8 @@ export default function ChangeCaseDetailPage() {
         <Card padding="lg">
           <CardHeader><CardTitle>3. Diagnostic report</CardTitle></CardHeader>
           <p style={{ fontSize: "var(--text-sm)", color: "var(--color-text-tertiary)", marginBottom: 10 }}>
-            An analysis deliverable -- ranked candidates, predicted probability and uncertainty, and a
-            recommended validation plan. This does not represent completed physical qualification.
+            An analysis deliverable -- ranked candidates, model-estimated probability and uncertainty,
+            decision support, and a recommended validation plan. This does not represent completed physical qualification.
           </p>
           <Button variant="secondary" onClick={handleDownloadReport} loading={generatingReport}>
             Download diagnostic report (.docx)

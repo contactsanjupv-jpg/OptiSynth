@@ -4041,6 +4041,139 @@ class TestChangeCaseApi(unittest.TestCase):
         self.assertIn("15 held-out points", text)
         self.assertNotIn("20 held-out points", text)
 
+    # -----------------------------------------------------------------
+    # C1 -- decision_support (categorical, derived only from domain
+    # coverage). The default _csv(15) history spans viscosity 450..464;
+    # a viscosity-500 candidate is far outside it and the raw GP still
+    # returns a probability of ~1.0 for it -- exactly the observed problem.
+    # -----------------------------------------------------------------
+    def _c1_case(self, email, org):
+        client, case_id = self._case_with_dataset_and_candidate(email, org, self._csv(15))
+        self._add_candidate(client, case_id, "Far", 500, 61)
+        self._add_candidate(client, case_id, "Edge", 465, 61)
+        return client, case_id
 
+    def test_c1_outside_candidate_keeps_raw_output_and_requires_validation(self):
+        import numpy as np
+        from engine.facade import rank_candidates as engine_rank_candidates
+
+        client, case_id = self._c1_case("c1-obs@coatings.com", "C1 Obs Coatings")
+        r = client.post(f"/api/change-cases/{case_id}/rank")
+        self.assertEqual(r.status_code, 200)
+        ranked = r.json()
+        res = {x["candidate_name"]: x for x in ranked}
+        far = res["Far"]
+
+        # The exact numeric level of the raw GP probability depends on the
+        # installed numpy/scikit-learn versions, so it is deliberately NOT
+        # asserted here; it is compared against the engine's own output below.
+        self.assertEqual(far["domain_coverage"]["status"], "outside_historical_domain")
+        ds = far["decision_support"]
+        self.assertEqual(ds["status"], "requires_validation")
+        self.assertEqual(ds["label"], "Requires validation")
+        self.assertEqual(ds["basis"], "historical_domain_coverage")
+        self.assertEqual(ds["domain_status"], "outside_historical_domain")
+
+        # probability and sigma are byte-for-byte what the engine returns
+        # on its own for the same data (decision_support altered neither)
+        X = np.array([[450 + i, 60 + i * 0.1] for i in range(15)])
+        y = np.array([70 + i * 0.5 for i in range(15)])
+        direct = engine_rank_candidates(
+            X, y, "maximize", ["viscosity", "solids_pct"], 80.0,
+            [{"name": "Far", "features": {"viscosity": 500, "solids_pct": 61}}],
+        )[0]
+        self.assertAlmostEqual(far["predicted_probability"], direct["predicted_probability"], places=9)
+        self.assertAlmostEqual(far["uncertainty_std"], direct["uncertainty_std"], places=9)
+
+        # ranking order is still purely probability-descending: decision_support
+        # does not demote or re-order anything
+        probs = [x["predicted_probability"] for x in ranked]
+        self.assertEqual(probs, sorted(probs, reverse=True))
+
+        self.assertEqual(res["Resin A"]["decision_support"]["status"], "evidence_supported")
+        self.assertEqual(res["Edge"]["decision_support"]["status"], "caution")
+
+    def test_c1_rank_and_candidate_listing_agree(self):
+        client, case_id = self._c1_case("c1-agree@coatings.com", "C1 Agree Coatings")
+        ranked = {x["candidate_name"]: x for x in client.post(f"/api/change-cases/{case_id}/rank").json()}
+        listed = {c["candidate_name"]: c for c in client.get(f"/api/change-cases/{case_id}/candidates").json()}
+        self.assertEqual(set(ranked), set(listed))
+        for name in ranked:
+            self.assertEqual(ranked[name]["decision_support"], listed[name]["decision_support"], msg=name)
+            self.assertEqual(ranked[name]["domain_coverage"], listed[name]["domain_coverage"], msg=name)
+            self.assertEqual(ranked[name]["predicted_probability"],
+                             listed[name]["latest_prediction"]["predicted_probability"], msg=name)
+            self.assertEqual(ranked[name]["uncertainty_std"],
+                             listed[name]["latest_prediction"]["uncertainty_std"], msg=name)
+
+    def test_c1_no_prediction_means_no_decision_support(self):
+        client, case_id = self._c1_case("c1-none@coatings.com", "C1 None Coatings")
+        listed = client.get(f"/api/change-cases/{case_id}/candidates").json()
+        self.assertEqual(len(listed), 3)
+        for c in listed:
+            self.assertIsNone(c["latest_prediction"])
+            self.assertIsNone(c["domain_coverage"])
+            self.assertIsNone(c["decision_support"])
+
+    def test_c1_decision_support_stays_tied_to_prediction_dataset_after_newer_upload(self):
+        client, case_id = self._c1_case("c1-prov@coatings.com", "C1 Prov Coatings")
+        client.post(f"/api/change-cases/{case_id}/rank")
+
+        def far_signal():
+            listed = {c["candidate_name"]: c for c in client.get(f"/api/change-cases/{case_id}/candidates").json()}
+            return listed["Far"]["decision_support"]["status"]
+
+        self.assertEqual(far_signal(), "requires_validation")
+        wide = [(300 + i * 40, 60 + i * 0.1, 70 + i * 0.5) for i in range(16)]  # viscosity 300..900
+        self.assertEqual(self._upload_csv(client, case_id, self._csv_from_rows(wide)).status_code, 201)
+        self.assertEqual(far_signal(), "requires_validation")  # newer upload must not launder it
+        self.assertEqual(client.post(f"/api/change-cases/{case_id}/rank").status_code, 200)
+        self.assertEqual(far_signal(), "evidence_supported")  # only a NEW ranking re-stamps it
+
+    def test_c1_prediction_with_unavailable_coverage_fails_safe(self):
+        from unittest import mock
+        import backend.app.services.change_case_service as svc
+
+        client, case_id = self._c1_case("c1-safe@coatings.com", "C1 Safe Coatings")
+        client.post(f"/api/change-cases/{case_id}/rank")
+        with mock.patch.object(svc, "_historical_ranges", return_value=None):
+            listed = {c["candidate_name"]: c for c in client.get(f"/api/change-cases/{case_id}/candidates").json()}
+        for name, c in listed.items():
+            self.assertIsNone(c["domain_coverage"], msg=name)
+            self.assertEqual(c["decision_support"]["status"], "requires_validation", msg=name)
+            self.assertIsNone(c["decision_support"]["domain_status"], msg=name)
+
+    def test_c1_experiment_text_uses_model_estimated_wording_and_same_thresholds(self):
+        client, case_id = self._c1_case("c1-exp@coatings.com", "C1 Exp Coatings")
+        res = {x["candidate_name"]: x for x in client.post(f"/api/change-cases/{case_id}/rank").json()}
+        # Expected tier is derived from the (unchanged) 0.8 / 0.4 thresholds and
+        # each candidate's actual probability, so the test does not depend on
+        # the numeric level the installed numpy/scikit-learn happen to produce.
+        for x in res.values():
+            p = x["predicted_probability"]
+            tier = "high" if p >= 0.8 else "moderate" if p >= 0.4 else "low"
+            self.assertIn(f"{tier} model-estimated probability", x["recommended_experiment"], msg=x["candidate_name"])
+            self.assertNotIn("predicted confidence", x["recommended_experiment"])
+        self.assertIn("Domain caution", res["Far"]["recommended_experiment"])  # P5 text untouched
+
+    def test_c1_report_shows_model_estimate_and_requires_validation_for_outside_candidate(self):
+        client, case_id = self._c1_case("c1-rep@coatings.com", "C1 Rep Coatings")
+        ranked = {x["candidate_name"]: x for x in client.post(f"/api/change-cases/{case_id}/rank").json()}
+        r = client.post(f"/api/change-cases/{case_id}/report")
+        self.assertEqual(r.status_code, 200)
+        text = self._docx_text(r.content)
+        self.assertIn("Model-estimated probability", text)
+        self.assertIn("Decision support", text)
+        self.assertIn("Requires validation", text)
+        self.assertIn("Evidence-supported", text)
+        self.assertIn("Outside historical range", text)
+        self.assertIn(f"{ranked['Far']['predicted_probability']:.0%}", text)  # raw probability unchanged
+        self.assertIn(f"{ranked['Far']['uncertainty_std']:.3f}", text)
+        self.assertIn("not a validated qualification probability", text)
+        self.assertNotIn("Predicted qualification probability", text)
+        self.assertNotIn("confidence-scored", text)
+        self.assertIn("ranked shortlist ordered by model-estimated probability", text)
 if __name__ == "__main__":
     unittest.main()
+
+    

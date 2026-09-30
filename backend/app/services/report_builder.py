@@ -88,6 +88,18 @@ def build_project_report(project: dict, backtest: dict, recommendations: list,
 INSUFFICIENT_EVIDENCE_STATEMENT = "Insufficient evidence to establish predictive performance."
 
 
+# C1: wording shown beneath the ranked-candidates table.
+MODEL_ESTIMATE_NOTE = (
+    "Model-estimated probability is the model's output given the supplied "
+    "historical data. It is not a validated qualification probability."
+)
+DECISION_SUPPORT_EXPLANATION = (
+    "Decision support is a separate, categorical signal derived only from whether each "
+    "candidate lies within the observed historical range of every feature. It does not "
+    "change or adjust the model-estimated probability, and 'Evidence-supported' does not "
+    "mean qualified: physical validation is required for every candidate."
+)
+
 DOMAIN_COVERAGE_LABELS = {
     "within_historical_domain": "Within historical range",
     "near_edge_of_domain": "Near edge of historical range",
@@ -100,8 +112,8 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
                                 model_quality: dict = None, uncertainty_calibration: dict = None) -> str:
     """The Phase 2 commercial deliverable: the qualification diagnostic
     report. Deliberately explicit that this is an ANALYSIS deliverable
-    (a ranked, confidence-scored shortlist and a recommended validation
-    plan), not a claim that physical qualification is complete -- per the
+    (a ranked shortlist ordered by model-estimated probability and a
+    recommended validation plan), not a claim that physical qualification is complete -- per the
     approved Phase 2 scope, this must never imply physical lab
     qualification itself was performed or completed within any stated
     timeframe."""
@@ -128,22 +140,38 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
         doc.add_paragraph("No candidates ranked yet.")
     else:
         show_coverage = any(r.get("domain_coverage") for r in ranked_results)
-        table = doc.add_table(rows=1, cols=4 if show_coverage else 3)
+        # C1: the categorical decision-support column is shown whenever any
+        # result carries it (i.e. always for real ranked predictions).
+        show_decision = any(r.get("decision_support") for r in ranked_results)
+        table = doc.add_table(rows=1, cols=3 + int(show_coverage) + int(show_decision))
         table.style = "Light Grid Accent 1"
         hdr = table.rows[0].cells
         hdr[0].text = "Candidate"
-        hdr[1].text = "Predicted qualification probability"
+        hdr[1].text = "Model-estimated probability"
         hdr[2].text = "Uncertainty (std)"
+        next_col = 3
         if show_coverage:
-            hdr[3].text = "Historical data coverage"
+            hdr[next_col].text = "Historical data coverage"
+            next_col += 1
+        if show_decision:
+            hdr[next_col].text = "Decision support"
         for r in ranked_results:
             row = table.add_row().cells
             row[0].text = r["candidate_name"]
             row[1].text = f"{r['predicted_probability']:.0%}"
             row[2].text = f"{r['uncertainty_std']:.3f}"
+            next_col = 3
             if show_coverage:
                 cov = r.get("domain_coverage")
-                row[3].text = DOMAIN_COVERAGE_LABELS[cov["status"]] if cov else "Not assessed"
+                row[next_col].text = DOMAIN_COVERAGE_LABELS[cov["status"]] if cov else "Not assessed"
+                next_col += 1
+            if show_decision:
+                ds = r.get("decision_support")
+                row[next_col].text = ds["label"] if ds else "Not assessed"
+
+        doc.add_paragraph(MODEL_ESTIMATE_NOTE).runs[0].font.size = Pt(9)
+        if show_decision:
+            doc.add_paragraph(DECISION_SUPPORT_EXPLANATION).runs[0].font.size = Pt(9)
 
         doc.add_heading("Recommended Validation Experiments", level=1)
         for r in ranked_results:
@@ -238,8 +266,8 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
 
     disclaimer = doc.add_paragraph()
     disclaimer.add_run(
-        "This report is an analysis deliverable: a ranked, confidence-scored "
-        "shortlist and a recommended validation plan. It does not represent "
+        "This report is an analysis deliverable: a ranked shortlist ordered by "
+        "model-estimated probability and a recommended validation plan. It does not represent "
         "completed physical qualification -- recommended experiments must "
         "still be run and their real-world outcomes recorded before any "
         "candidate is considered qualified."

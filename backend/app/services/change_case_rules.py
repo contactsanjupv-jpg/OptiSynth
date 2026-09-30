@@ -7,12 +7,16 @@ that actually matter (safety, data integrity, entitlement) from web/DB
 plumbing so they can't be silently bypassed by a route that forgets to
 call them.
 """
+
 import math
+
 from datetime import datetime, timezone
 
 from backend.app.schemas.errors import ValidationError
 
+
 MIN_HISTORICAL_ROWS_FOR_PREDICTION = 8
+
 
 VALID_STATUS_TRANSITIONS = {
     "draft": {"active"},
@@ -46,7 +50,10 @@ def check_status_transition_allowed(current_status: str, new_status: str) -> Non
     it, keeping the lifecycle simple and auditable."""
     allowed = VALID_STATUS_TRANSITIONS.get(current_status)
     if allowed is None:
-        raise ValidationError(f"Unknown change case status: {current_status!r}", field="status")
+        raise ValidationError(
+            f"Unknown change case status: {current_status!r}", field="status"
+        )
+
     if new_status not in allowed:
         raise ValidationError(
             f"Can't move a change case from '{current_status}' to '{new_status}'.",
@@ -82,6 +89,7 @@ def check_entitled_for_diagnostic(plan: str, subscription_status: str) -> None:
             "must be current to run a new diagnostic.",
             field="subscription_status",
         )
+
     if plan == "trial":
         raise ValidationError(
             "Trial organizations can't run a full diagnostic yet -- "
@@ -98,8 +106,10 @@ def is_change_case_expired(expires_at: str, now: datetime = None) -> bool:
     ISO string and always compares in UTC."""
     now = now or datetime.now(timezone.utc)
     parsed = datetime.fromisoformat(expires_at)
+
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
+
     return now > parsed
 
 
@@ -119,6 +129,7 @@ def check_can_add_candidate(change_case_status: str, existing_candidate_count: i
             f"Can't add a candidate to a change case with status '{change_case_status}'.",
             field="status",
         )
+
     if existing_candidate_count >= MAX_CANDIDATES_PER_CHANGE_CASE:
         raise ValidationError(
             f"This change case already has {MAX_CANDIDATES_PER_CHANGE_CASE} candidates, "
@@ -134,11 +145,13 @@ def check_can_trigger_ranking(historical_row_count: int, candidate_count: int) -
     with a minimum candidate-count check (at least one NAMED candidate
     must exist -- ranking zero candidates is meaningless)."""
     check_sufficient_data_for_prediction(historical_row_count)
+
     if candidate_count < 1:
         raise ValidationError(
             "Add at least one candidate substitute before requesting a ranking.",
             field="candidates",
         )
+
 
 def check_candidate_features_finite(candidate_features: dict, candidate_name: str = None) -> None:
     """Priority 7A (B2): NaN and +/-Infinity are technically valid Python
@@ -150,6 +163,7 @@ def check_candidate_features_finite(candidate_features: dict, candidate_name: st
     NaN') instead of a clean application error. Mirrors
     check_candidate_features_complete's per-candidate clarity."""
     non_finite = [col for col, v in candidate_features.items() if not math.isfinite(v)]
+
     if non_finite:
         who = f"Candidate '{candidate_name}'" if candidate_name else "This candidate"
         raise ValidationError(
@@ -167,6 +181,7 @@ def check_rows_are_finite(rows: list) -> None:
     list of {"features": {col: float}, "target_value": float}."""
     for r in rows:
         non_finite = [col for col, v in r["features"].items() if not math.isfinite(v)]
+
         if non_finite or not math.isfinite(r["target_value"]):
             raise ValidationError(
                 "This dataset contains a non-finite value (NaN or Infinity) in a "
@@ -176,8 +191,11 @@ def check_rows_are_finite(rows: list) -> None:
             )
 
 
-def check_candidate_features_complete(feature_columns: list, candidate_features: dict,
-                                       candidate_name: str = None) -> None:
+def check_candidate_features_complete(
+    feature_columns: list,
+    candidate_features: dict,
+    candidate_name: str = None,
+) -> None:
     """Priority 6 (A2/A3): a candidate must supply a value for every feature
     the change case's qualification_spec requires -- otherwise ranking would
     later dereference a missing dict key (an accidental KeyError, not a
@@ -192,7 +210,9 @@ def check_candidate_features_complete(feature_columns: list, candidate_features:
     once, not before)."""
     if not feature_columns:
         return
+
     missing = [col for col in feature_columns if col not in candidate_features]
+
     if missing:
         who = f"Candidate '{candidate_name}'" if candidate_name else "This candidate"
         raise ValidationError(
@@ -207,22 +227,32 @@ def compute_data_quality_metrics(rows: list, feature_columns: list) -> tuple:
     gates, so the definition of 'duplicate' and 'constant' can't drift
     between them. `rows` is a list of {"features": {col: float},
     "target_value": float}. Returns (duplicate_count, constant_columns).
+
     A duplicate is an exact (features, target) repeat of an earlier row."""
     seen = set()
     duplicate_count = 0
+
     for r in rows:
         key = (tuple(sorted(r["features"].items())), r["target_value"])
+
         if key in seen:
             duplicate_count += 1
+
         seen.add(key)
+
     constant_columns = [
         col for col in feature_columns
         if len({r["features"][col] for r in rows}) <= 1
     ]
+
     return duplicate_count, constant_columns
 
 
-def classify_data_quality(historical_row_count: int, duplicate_count: int, constant_columns: list) -> str:
+def classify_data_quality(
+    historical_row_count: int,
+    duplicate_count: int,
+    constant_columns: list,
+) -> str:
     """Returns 'invalid', 'insufficient', or 'valid'. Never silently
     proceeds past a real data problem -- constant columns make a
     dataset unusable for prediction regardless of row count; too few
@@ -230,8 +260,10 @@ def classify_data_quality(historical_row_count: int, duplicate_count: int, const
     isn't enough evidence to trust a prediction."""
     if constant_columns:
         return "invalid"
+
     if historical_row_count - duplicate_count < MIN_HISTORICAL_ROWS_FOR_PREDICTION:
         return "insufficient"
+
     return "valid"
 
 
@@ -257,6 +289,7 @@ def check_data_quality_allows_ranking(data_quality_status: str) -> None:
             "produced.",
             field="data_quality_status",
         )
+
     if data_quality_status == "insufficient":
         raise ValidationError(
             f"After removing exact duplicate rows, this dataset has fewer than "
@@ -275,7 +308,12 @@ DOMAIN_EDGE_MARGIN_PCT = 0.10  # HEURISTIC, NOT SCIENTIFICALLY VALIDATED -- an e
 DOMAIN_WITHIN = "within_historical_domain"
 DOMAIN_NEAR_EDGE = "near_edge_of_domain"
 DOMAIN_OUTSIDE = "outside_historical_domain"
-_DOMAIN_SEVERITY = {DOMAIN_WITHIN: 0, DOMAIN_NEAR_EDGE: 1, DOMAIN_OUTSIDE: 2}
+
+_DOMAIN_SEVERITY = {
+    DOMAIN_WITHIN: 0,
+    DOMAIN_NEAR_EDGE: 1,
+    DOMAIN_OUTSIDE: 2,
+}
 
 
 def domain_coverage_note(edge_margin_pct: float = DOMAIN_EDGE_MARGIN_PCT) -> str:
@@ -283,6 +321,7 @@ def domain_coverage_note(edge_margin_pct: float = DOMAIN_EDGE_MARGIN_PCT) -> str
     report. Deliberately states that the margin is NOT scientifically
     derived -- this text must never imply otherwise."""
     pct = f"{edge_margin_pct:.0%}"
+
     return (
         "Historical-range coverage is a heuristic check, not a scientifically validated "
         f"measure. A candidate is 'near edge' when a feature lies within {pct} of that "
@@ -293,8 +332,12 @@ def domain_coverage_note(edge_margin_pct: float = DOMAIN_EDGE_MARGIN_PCT) -> str
     )
 
 
-def classify_domain_coverage(candidate_value: float, historical_min: float, historical_max: float,
-                              edge_margin_pct: float = DOMAIN_EDGE_MARGIN_PCT) -> str:
+def classify_domain_coverage(
+    candidate_value: float,
+    historical_min: float,
+    historical_max: float,
+    edge_margin_pct: float = DOMAIN_EDGE_MARGIN_PCT,
+) -> str:
     """Classifies ONE feature value against the observed historical range.
 
     - within the observed [min, max]                      -> within_historical_domain
@@ -308,13 +351,18 @@ def classify_domain_coverage(candidate_value: float, historical_min: float, hist
     other than that constant is outside."""
     if edge_margin_pct < 0:
         raise ValueError("edge_margin_pct must be non-negative.")
+
     if historical_min > historical_max:
         raise ValueError("historical_min must not exceed historical_max.")
+
     if historical_min <= candidate_value <= historical_max:
         return DOMAIN_WITHIN
+
     margin = (historical_max - historical_min) * edge_margin_pct
+
     if historical_min - margin <= candidate_value <= historical_max + margin:
         return DOMAIN_NEAR_EDGE
+
     return DOMAIN_OUTSIDE
 
 
@@ -324,27 +372,150 @@ def compute_historical_ranges(rows: list, feature_columns: list) -> dict:
     no rows, since a range can't be defined without data."""
     if not rows:
         raise ValueError("Cannot compute historical ranges without historical rows.")
+
     return {
-        col: (min(r["features"][col] for r in rows), max(r["features"][col] for r in rows))
+        col: (
+            min(r["features"][col] for r in rows),
+            max(r["features"][col] for r in rows),
+        )
         for col in feature_columns
     }
 
 
-def classify_candidate_domain_coverage(candidate_features: dict, historical_ranges: dict,
-                                        edge_margin_pct: float = DOMAIN_EDGE_MARGIN_PCT) -> dict:
+def classify_candidate_domain_coverage(
+    candidate_features: dict,
+    historical_ranges: dict,
+    edge_margin_pct: float = DOMAIN_EDGE_MARGIN_PCT,
+) -> dict:
     """Per-feature classification plus an overall status that is the WORST
     across features (a candidate is only 'within' if every feature is)."""
     features = {}
     overall = DOMAIN_WITHIN
+
     for col, (lo, hi) in historical_ranges.items():
         value = candidate_features[col]
         status = classify_domain_coverage(value, lo, hi, edge_margin_pct)
-        features[col] = {"status": status, "value": value, "historical_min": lo, "historical_max": hi}
+
+        features[col] = {
+            "status": status,
+            "value": value,
+            "historical_min": lo,
+            "historical_max": hi,
+        }
+
         if _DOMAIN_SEVERITY[status] > _DOMAIN_SEVERITY[overall]:
             overall = status
+
     return {
         "status": overall,
         "edge_margin_pct": edge_margin_pct,
         "features": features,
         "note": domain_coverage_note(edge_margin_pct),
+    }
+
+
+# ---------------------------------------------------------------------------
+# C1 -- decision support (categorical; derived ONLY from domain coverage)
+#
+# The GP's predicted_probability is a model output given the supplied
+# historical data, not a validated qualification probability. A candidate
+# far outside the historical range can still receive a numerically
+# maximal probability, so the probability alone must never be read as
+# approval. decision_support is a SEPARATE, purely categorical signal that
+# consumes the EXISTING domain-coverage status. It deliberately does NOT
+# look at predicted_probability, sigma, or any model-quality metric, adds
+# no numeric score, and introduces no second domain heuristic. The raw
+# probability, sigma and domain_coverage are never modified by it.
+# ---------------------------------------------------------------------------
+
+DECISION_EVIDENCE_SUPPORTED = "evidence_supported"
+DECISION_CAUTION = "caution"
+DECISION_REQUIRES_VALIDATION = "requires_validation"
+DECISION_SUPPORT_BASIS = "historical_domain_coverage"
+
+_DECISION_BY_DOMAIN_STATUS = {
+    DOMAIN_WITHIN: DECISION_EVIDENCE_SUPPORTED,
+    DOMAIN_NEAR_EDGE: DECISION_CAUTION,
+    DOMAIN_OUTSIDE: DECISION_REQUIRES_VALIDATION,
+}
+
+DECISION_LABELS = {
+    DECISION_EVIDENCE_SUPPORTED: "Evidence-supported",
+    DECISION_CAUTION: "Caution",
+    DECISION_REQUIRES_VALIDATION: "Requires validation",
+}
+
+DECISION_STATEMENTS = {
+    DECISION_EVIDENCE_SUPPORTED: (
+        "Candidate lies within the observed range of every feature in the historical "
+        "data, so the model estimate interpolates observed evidence. Physical "
+        "validation is still required before any candidate is considered qualified."
+    ),
+    DECISION_CAUTION: (
+        "Candidate lies just beyond the observed range of at least one feature "
+        "(within the heuristic edge margin). The estimate is a mild extrapolation; "
+        "validate physically before relying on it."
+    ),
+    DECISION_REQUIRES_VALIDATION: (
+        "Candidate lies outside the observed range of at least one feature. The "
+        "estimate is an extrapolation and is not evidence-supported for "
+        "qualification without physical validation."
+    ),
+}
+
+# Used only when a prediction exists but its historical-range coverage is
+# unavailable / unrecognised. Status is still requires_validation (fail-safe).
+DECISION_STATEMENT_COVERAGE_UNAVAILABLE = (
+    "Historical-range coverage could not be determined for this candidate, so the "
+    "model estimate is not evidence-supported for qualification without physical "
+    "validation."
+)
+
+MODEL_ESTIMATE_NOTE = (
+    "Model-estimated probability is the model's output given the supplied "
+    "historical data. It is not a validated qualification probability."
+)
+
+
+def derive_decision_support(domain_coverage, has_prediction: bool = True):
+    """Categorical decision-support signal for one candidate.
+
+    - no prediction                                  -> None
+    - prediction + within_historical_domain          -> evidence_supported
+    - prediction + near_edge_of_domain               -> caution
+    - prediction + outside_historical_domain         -> requires_validation
+    - prediction + coverage missing/unrecognised     -> requires_validation
+      (fail-safe: never defaults to evidence_supported)
+
+    'evidence_supported' means ONLY that every feature lies within its
+    observed historical range (a per-feature check, not a joint
+    applicability domain). It does not mean qualified, validated, or
+    guaranteed to generalise. Pure: depends on nothing but the coverage
+    status -- not on probability, sigma, or model quality."""
+    if not has_prediction:
+        return None
+
+    domain_status = (
+        domain_coverage.get("status")
+        if isinstance(domain_coverage, dict)
+        else None
+    )
+
+    status = _DECISION_BY_DOMAIN_STATUS.get(domain_status)
+
+    if status is None:
+        return {
+            "status": DECISION_REQUIRES_VALIDATION,
+            "basis": DECISION_SUPPORT_BASIS,
+            "domain_status": None,
+            "label": DECISION_LABELS[DECISION_REQUIRES_VALIDATION],
+            "statement": DECISION_STATEMENT_COVERAGE_UNAVAILABLE,
+        }
+
+    return {
+        "status": status,
+        "basis": DECISION_SUPPORT_BASIS,
+        "domain_status": domain_status,
+        "label": DECISION_LABELS[status],
+        "statement": DECISION_STATEMENTS[status],
     }

@@ -71,11 +71,44 @@ export interface Prediction {
   dataset_version_id: number;
 }
 
+export type DomainStatus = "within_historical_domain" | "near_edge_of_domain" | "outside_historical_domain";
+
+/** Heuristic per-feature historical-range coverage (backend Priority 5). */
+export interface DomainCoverage {
+  status: DomainStatus;
+  edge_margin_pct: number;
+  features: Record<
+    string,
+    { status: DomainStatus; value: number; historical_min: number; historical_max: number }
+  >;
+  note: string;
+}
+
+export type DecisionSupportStatus = "evidence_supported" | "caution" | "requires_validation";
+
+/**
+ * Categorical decision support (backend C1), derived ONLY from domain
+ * coverage. It is not a score and does not modify predicted_probability.
+ * "evidence_supported" does NOT mean qualified -- physical validation is
+ * still required for every candidate.
+ */
+export interface DecisionSupport {
+  status: DecisionSupportStatus;
+  basis: string;
+  domain_status: DomainStatus | null;
+  label: string;
+  statement: string;
+}
+
 export interface Candidate {
   id: number;
   candidate_name: string;
   properties: Record<string, number>;
   latest_prediction: Prediction | null;
+  /** null until the candidate has been ranked. */
+  domain_coverage: DomainCoverage | null;
+  /** null until the candidate has been ranked. */
+  decision_support: DecisionSupport | null;
 }
 
 export function addCandidate(changeCaseId: number, name: string, features: Record<string, number>) {
@@ -95,6 +128,8 @@ export interface RankResult {
   predicted_probability: number;
   uncertainty_std: number;
   recommended_experiment: string;
+  domain_coverage: DomainCoverage | null;
+  decision_support: DecisionSupport | null;
 }
 
 export function rankChangeCase(changeCaseId: number) {

@@ -84,6 +84,9 @@ class CandidateResponse(BaseModel):
     # Heuristic historical-range coverage, judged against the dataset the
     # latest prediction was generated from. None if not yet ranked.
     domain_coverage: dict | None = None
+    # C1: categorical decision support derived only from domain_coverage
+    # (evidence_supported / caution / requires_validation). None until ranked.
+    decision_support: dict | None = None
 
 
 class RecommendedExperimentResponse(BaseModel):
@@ -107,6 +110,7 @@ class RankResultResponse(BaseModel):
     uncertainty_std: float
     recommended_experiment: str
     domain_coverage: dict | None = None
+    decision_support: dict | None = None
     model_quality: dict | None = None
     uncertainty_calibration: dict | None = None
 

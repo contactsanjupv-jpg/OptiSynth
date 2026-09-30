@@ -319,3 +319,80 @@ class TestFiniteValueChecks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestDeriveDecisionSupport(unittest.TestCase):
+    """C1: decision_support is a categorical signal derived ONLY from the
+    existing domain-coverage status."""
+
+    def _cov(self, status):
+        return {"status": status, "edge_margin_pct": 0.10, "features": {}, "note": "n"}
+
+    def test_within_maps_to_evidence_supported(self):
+        ds = change_case_rules.derive_decision_support(self._cov(change_case_rules.DOMAIN_WITHIN))
+        self.assertEqual(ds["status"], "evidence_supported")
+        self.assertEqual(ds["label"], "Evidence-supported")
+        self.assertEqual(ds["basis"], "historical_domain_coverage")
+        self.assertEqual(ds["domain_status"], "within_historical_domain")
+        self.assertIn("Physical validation is still required", ds["statement"])
+
+    def test_near_edge_maps_to_caution(self):
+        ds = change_case_rules.derive_decision_support(self._cov(change_case_rules.DOMAIN_NEAR_EDGE))
+        self.assertEqual(ds["status"], "caution")
+        self.assertEqual(ds["label"], "Caution")
+        self.assertEqual(ds["domain_status"], "near_edge_of_domain")
+
+    def test_outside_maps_to_requires_validation(self):
+        ds = change_case_rules.derive_decision_support(self._cov(change_case_rules.DOMAIN_OUTSIDE))
+        self.assertEqual(ds["status"], "requires_validation")
+        self.assertEqual(ds["label"], "Requires validation")
+        self.assertEqual(ds["domain_status"], "outside_historical_domain")
+
+    def test_missing_coverage_with_prediction_fails_safe_to_requires_validation(self):
+        for bad in (None, {}, {"status": None}, {"status": "something_unrecognised"}, "not-a-dict"):
+            ds = change_case_rules.derive_decision_support(bad, has_prediction=True)
+            self.assertEqual(ds["status"], "requires_validation", msg=repr(bad))
+            self.assertIsNone(ds["domain_status"])
+            self.assertNotEqual(ds["status"], "evidence_supported")
+
+    def test_no_prediction_returns_none(self):
+        self.assertIsNone(change_case_rules.derive_decision_support(None, has_prediction=False))
+        self.assertIsNone(change_case_rules.derive_decision_support(
+            self._cov(change_case_rules.DOMAIN_WITHIN), has_prediction=False))
+
+    def test_evidence_supported_if_and_only_if_domain_within(self):
+        for status in (change_case_rules.DOMAIN_WITHIN, change_case_rules.DOMAIN_NEAR_EDGE,
+                       change_case_rules.DOMAIN_OUTSIDE, None):
+            cov = self._cov(status) if status else None
+            ds = change_case_rules.derive_decision_support(cov)
+            self.assertEqual(ds["status"] == "evidence_supported",
+                             status == change_case_rules.DOMAIN_WITHIN)
+
+    def test_result_does_not_depend_on_probability_or_sigma(self):
+        # The function accepts neither, and a coverage dict carrying
+        # probability/sigma-like keys must not change the outcome.
+        import inspect
+        params = set(inspect.signature(change_case_rules.derive_decision_support).parameters)
+        self.assertEqual(params, {"domain_coverage", "has_prediction"})
+        base = change_case_rules.derive_decision_support(self._cov(change_case_rules.DOMAIN_OUTSIDE))
+        noisy = self._cov(change_case_rules.DOMAIN_OUTSIDE)
+        noisy.update({"predicted_probability": 1.0, "uncertainty_std": 1e-9, "r2_score": 0.99})
+        self.assertEqual(change_case_rules.derive_decision_support(noisy), base)
+
+    def test_does_not_mutate_input_coverage(self):
+        cov = self._cov(change_case_rules.DOMAIN_OUTSIDE)
+        snapshot = dict(cov)
+        change_case_rules.derive_decision_support(cov)
+        self.assertEqual(cov, snapshot)
+
+    def test_real_classifier_output_feeds_decision_support(self):
+        ranges = {"viscosity": (450, 464)}
+        expected = {460: "evidence_supported", 465: "caution", 500: "requires_validation"}
+        for value, status in expected.items():
+            cov = change_case_rules.classify_candidate_domain_coverage({"viscosity": value}, ranges)
+            self.assertEqual(change_case_rules.derive_decision_support(cov)["status"], status)
+
+    def test_statement_and_note_wording(self):
+        self.assertIn("not a validated qualification probability", change_case_rules.MODEL_ESTIMATE_NOTE)
+        for text in list(change_case_rules.DECISION_STATEMENTS.values()) + [
+                change_case_rules.DECISION_STATEMENT_COVERAGE_UNAVAILABLE]:
+            self.assertNotIn("confidence", text.lower())

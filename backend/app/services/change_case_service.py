@@ -135,6 +135,7 @@ def list_candidates_with_predictions(organization_id: int, change_case_id: int) 
         c["properties"] = json.loads(c["properties_json"])
         c["latest_prediction"] = candidate_repo.get_latest_prediction_for_candidate(organization_id, c["id"])
         c["domain_coverage"] = None
+        c["decision_support"] = None  # C1: None until a prediction exists
         pred = c["latest_prediction"]
         if pred is None:
             continue
@@ -152,6 +153,11 @@ def list_candidates_with_predictions(organization_id: int, change_case_id: int) 
         ranges = ranges_by_dataset[dataset_id]
         if ranges is not None:
             c["domain_coverage"] = change_case_rules.classify_candidate_domain_coverage(c["properties"], ranges)
+        # C1: categorical decision support, derived ONLY from the domain
+        # coverage above (so it inherits the same dataset-version
+        # provenance). If a prediction exists but coverage could not be
+        # determined (ranges is None), this fails safe to requires_validation.
+        c["decision_support"] = change_case_rules.derive_decision_support(c["domain_coverage"], has_prediction=True)
     return candidates
 
 
@@ -300,6 +306,7 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
             r["predicted_probability"], r["uncertainty_std"],
         )
         domain_coverage = change_case_rules.classify_candidate_domain_coverage(r["features"], historical_ranges)
+        decision_support = change_case_rules.derive_decision_support(domain_coverage, has_prediction=True)  # C1
         experiment_description = _minimum_experiment_description(r, target_value, direction, domain_coverage)
         candidate_repo.create_recommended_experiment(organization_id, candidate_id, experiment_description, priority=1)
         results.append({
@@ -309,6 +316,7 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
             "uncertainty_std": r["uncertainty_std"],
             "recommended_experiment": experiment_description,
             "domain_coverage": domain_coverage,
+            "decision_support": decision_support,
             # Priority 7B: previously computed above and discarded. Same
             # values for every candidate in this ranking call (they describe
             # the dataset/model, not an individual candidate) -- attached
@@ -331,15 +339,15 @@ def _minimum_experiment_description(ranked_candidate: dict, target_value: float,
     physical qualification itself is complete or fast."""
     prob = ranked_candidate["predicted_probability"]
     if prob >= 0.8:
-        confidence_note = "high predicted confidence"
+        confidence_note = "high model-estimated probability"
     elif prob >= 0.4:
-        confidence_note = "moderate predicted confidence -- validation is important before relying on this candidate"
+        confidence_note = "moderate model-estimated probability -- validation is important before relying on this candidate"
     else:
-        confidence_note = "low predicted confidence -- likely not worth physical validation unless no better candidate exists"
+        confidence_note = "low model-estimated probability -- likely not worth physical validation unless no better candidate exists"
     description = (
         f"Run a physical qualification test against the target spec for "
-        f"'{ranked_candidate['name']}' ({confidence_note}, predicted "
-        f"probability {prob:.0%}). This analysis identifies which "
+        f"'{ranked_candidate['name']}' ({confidence_note}; model estimate "
+        f"{prob:.0%}). This analysis identifies which "
         f"candidate to test first -- it does not replace running and "
         f"recording the actual physical result."
     )
@@ -431,6 +439,7 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
             "uncertainty_std": pred["uncertainty_std"],
             "recommended_experiment": description,
             "domain_coverage": c.get("domain_coverage"),
+            "decision_support": c.get("decision_support"),  # C1
         })
     ranked_results.sort(key=lambda r: r["predicted_probability"], reverse=True)
 
