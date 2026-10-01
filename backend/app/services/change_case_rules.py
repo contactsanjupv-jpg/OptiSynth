@@ -519,3 +519,21 @@ def derive_decision_support(domain_coverage, has_prediction: bool = True):
         "label": DECISION_LABELS[status],
         "statement": DECISION_STATEMENTS[status],
     }
+
+
+def deduplicate_rows(rows: list) -> list:
+    """C2: remove exact duplicate rows (same features AND same target_value),
+    keeping the first occurrence in order. Uses the SAME key as
+    compute_data_quality_metrics, so what is counted as a duplicate and what is
+    removed from the model fit can never disagree. Rows that share inputs but
+    differ in target are NOT duplicates (they are replicate/conflict cases,
+    handled at intake)."""
+    seen = set()
+    kept = []
+    for r in rows:
+        key = (tuple(sorted(r["features"].items())), r["target_value"])
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(r)
+    return kept

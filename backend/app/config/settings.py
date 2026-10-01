@@ -50,6 +50,16 @@ class Settings:
         self.PORT = int(os.environ.get("PORT", "5050"))
         self.ENV = os.environ.get("ENV", "development")
 
+        # D1: SESSION_COOKIE_SECURE defaults to false for local development. In
+        # production that would serve the session cookie without the Secure
+        # flag, so refuse to start rather than run that way silently.
+        if self.is_production and not self.SESSION_COOKIE_SECURE:
+            raise ConfigError(
+                "SESSION_COOKIE_SECURE must be true when ENV=production -- refusing "
+                "to start with session cookies missing the Secure flag over what "
+                "should be HTTPS-only traffic. Set SESSION_COOKIE_SECURE=true."
+            )
+
     @property
     def is_production(self) -> bool:
         return self.ENV == "production"

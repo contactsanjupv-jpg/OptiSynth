@@ -66,6 +66,21 @@ class TestChangeCaseApi(unittest.TestCase):
 
             os.remove(f"{cls.test_dir}/test.db")
 
+        # `settings` and `database.engine` are module-level singletons built
+        # the FIRST time anything imports them -- which, in a combined
+        # `unittest` run with other modules, happens during import/discovery,
+        # BEFORE this setUpClass runs. Setting the env var above is then too
+        # late, so rebind both explicitly (same fix as test_api.py) and fail
+        # loudly if this suite is ever not on its own isolated database.
+        from backend.app.config.settings import settings
+        from backend.app.config import database
+        settings.DATABASE_URL = os.environ["DATABASE_URL"]
+        database.engine = database._make_engine()
+        assert str(database.engine.url).endswith(f"{cls.test_dir}/test.db"), (
+            f"Test isolation failure: engine bound to {database.engine.url!r}, "
+            f"not this suite's isolated database file ({cls.test_dir}/test.db)."
+        )
+
 
 
         from fastapi.testclient import TestClient
@@ -4198,7 +4213,10 @@ class TestChangeCaseApi(unittest.TestCase):
         self.assertIn("Evidence gaps", text)
         self.assertIn("Far: no historical evidence at viscosity = 500", text)
         self.assertIn("No physical validation outcome has been recorded for", text)
-        self.assertIn("Units of measure and test conditions are not recorded or verified", text)
+        # B3: with an intake review record the unit/condition gaps are stated per
+        # dataset (the generic wording is only used for datasets with no record).
+        self.assertIn("No unit is recorded for: viscosity, solids_pct, adhesion_score", text)
+        self.assertIn("No test-condition columns were declared at intake", text)
         self.assertIn("Row-level source provenance", text)
 
     def test_report_shows_recorded_outcome_next_to_model_estimate_without_changing_it(self):
@@ -4245,6 +4263,48 @@ class TestChangeCaseApi(unittest.TestCase):
         other = self.client_factory()
         self._signup(other, "ten-2@coatings.com", "Ten Two Coatings")
         self.assertEqual(other.post(f"/api/change-cases/{case_id}/report").status_code, 404)
+    # -----------------------------------------------------------------
+    # C2 -- exact duplicate rows are excluded from the model fit/scoring.
+    # -----------------------------------------------------------------
+    def _distinct15_plus_repeats(self, repeats):
+        rows = [(450 + i, 60 + i * 0.1, 70 + i * 0.5) for i in range(15)]
+        return rows + [rows[0]] * repeats
+
+    def test_c2_model_quality_reflects_distinct_rows_not_raw_row_count(self):
+        client, case_id = self._case_with_dataset_and_candidate(
+            "c2-a@coatings.com", "C2 A Coatings", self._csv_from_rows(self._distinct15_plus_repeats(6)))
+        r = client.post(f"/api/change-cases/{case_id}/rank")
+        self.assertEqual(r.status_code, 200, r.text)
+        mq = r.json()[0]["model_quality"]
+        self.assertEqual(mq["n_points_scored"], 15)  # not 21
+
+    def test_c2_report_evidence_metrics_also_use_distinct_rows(self):
+        client, case_id = self._case_with_dataset_and_candidate(
+            "c2-b@coatings.com", "C2 B Coatings", self._csv_from_rows(self._distinct15_plus_repeats(6)))
+        client.post(f"/api/change-cases/{case_id}/rank")
+        text = self._docx_text(client.post(f"/api/change-cases/{case_id}/report").content)
+        self.assertIn("15 held-out", text)  # report's cross-validation scored the 15 distinct rows
+        self.assertNotIn("21 held-out", text)
+
+    def test_c2_duplicates_do_not_change_predictions_versus_distinct_only(self):
+        """Same distinct evidence with and without 6 exact repeats must give
+        byte-identical model output: the repeats carry no extra information."""
+        c1, id1 = self._case_with_dataset_and_candidate(
+            "c2-c@coatings.com", "C2 C Coatings", self._csv_from_rows(self._distinct15_plus_repeats(0)))
+        c2, id2 = self._case_with_dataset_and_candidate(
+            "c2-d@coatings.com", "C2 D Coatings", self._csv_from_rows(self._distinct15_plus_repeats(6)))
+        a = c1.post(f"/api/change-cases/{id1}/rank").json()[0]
+        b = c2.post(f"/api/change-cases/{id2}/rank").json()[0]
+        self.assertEqual(a["predicted_probability"], b["predicted_probability"])
+        self.assertEqual(a["uncertainty_std"], b["uncertainty_std"])
+        self.assertEqual(a["domain_coverage"], b["domain_coverage"])
+
+    def test_c2_data_quality_still_counts_the_duplicates(self):
+        client, case_id = self._case_with_dataset_and_candidate(
+            "c2-e@coatings.com", "C2 E Coatings", self._csv_from_rows(self._distinct15_plus_repeats(6)))
+        text = self._docx_text(client.post(f"/api/change-cases/{case_id}/report").content)
+        self.assertIn("6 exact duplicate rows", text)  # still disclosed, just not double-counted in the fit
+
 if __name__ == "__main__":
     unittest.main()
 

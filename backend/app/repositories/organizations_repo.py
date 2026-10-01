@@ -24,3 +24,13 @@ def get_organization(organization_id: int):
             text("SELECT * FROM organizations WHERE id = :id"), {"id": organization_id}
         ).mappings().first()
         return dict(row) if row else None
+
+
+def find_organizations_by_exact_name(name: str) -> list:
+    """Exact (case-sensitive) name match. Organization names are NOT unique,
+    so callers must handle 0 and >1 results explicitly."""
+    with db_connection() as conn:
+        rows = conn.execute(
+            text("SELECT * FROM organizations WHERE name = :name ORDER BY id"), {"name": name}
+        ).mappings().all()
+        return [dict(r) for r in rows]

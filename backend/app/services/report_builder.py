@@ -176,6 +176,117 @@ def _add_requirement_and_record(doc, ctx):
                 row[i].text = str(c["properties"].get(col, ""))
 
 
+def _add_ingestion_review(doc, ctx):
+    """Evidence intake review (B2/B3): what was done to the customer's file
+    before any value reached the model -- mapping, units, test conditions,
+    exclusions, conflicts, integrity hash. Read from the stored review record."""
+    doc.add_heading("Evidence intake review", level=1)
+    review = ctx.get("ingestion_review")
+    if not review:
+        doc.add_paragraph(
+            "No intake review record exists for this dataset (it was uploaded before review records were kept). "
+            "Column mapping, units and test conditions for it were not recorded by the system."
+        )
+        return
+    counts = review.get("counts", {})
+    rows = [
+        ("Stored file SHA-256", review.get("file_sha256", "not recorded")),
+        ("Data rows in file", str(counts.get("data_rows", ""))),
+        ("Rows used by the model", str(counts.get("ingested", ""))),
+        ("Rows skipped (value not a usable number)", str(counts.get("skipped_unparseable", 0))),
+        ("Rows excluded by reviewer", str(counts.get("excluded_by_reviewer", 0))),
+        ("Rows excluded (other test conditions)", str(counts.get("excluded_other_conditions", 0))),
+    ]
+    excl = review.get("exclusions", {})
+    if excl.get("reason"):
+        rows.append(("Reviewer exclusion reason", excl["reason"]))
+    _kv_table(doc, rows)
+
+    mapping = review.get("column_mapping", {})
+    if mapping:
+        doc.add_paragraph("Column mapping (model column <- source header):")
+        table = doc.add_table(rows=1, cols=3)
+        table.style = "Light Grid Accent 1"
+        hdr = table.rows[0].cells
+        hdr[0].text, hdr[1].text, hdr[2].text = "Model column", "Source header", "How matched"
+        for canon, info in mapping.items():
+            row = table.add_row().cells
+            row[0].text = canon
+            row[1].text = info["source_header"]
+            row[2].text = "Exact header" if info["method"] == "exact" else "Reviewer-confirmed mapping"
+
+    units = review.get("units", {})
+    if units:
+        doc.add_paragraph("Units (as recorded at intake):")
+        table = doc.add_table(rows=1, cols=4)
+        table.style = "Light Grid Accent 1"
+        hdr = table.rows[0].cells
+        hdr[0].text, hdr[1].text, hdr[2].text, hdr[3].text = "Column", "Unit used", "Units seen in file", "Converted"
+        for canon, u in units.items():
+            row = table.add_row().cells
+            row[0].text = canon
+            row[1].text = u.get("canonical") or "Not declared"
+            row[2].text = ", ".join(u.get("source_units_seen") or []) or "none stated"
+            conv = u.get("conversions") or []
+            row[3].text = "; ".join(f"{c['rows']} row(s) {c['from']} -> {c['to']}" for c in conv) or "No"
+        doc.add_paragraph(
+            "Conversions are applied only where the change case declares the unit and an exact conversion exists; "
+            "otherwise differing units block the upload. Candidate input values are taken as supplied, in the "
+            "units shown above; they are not unit-checked."
+        ).runs[0].font.size = Pt(9)
+
+    conds = review.get("conditions", {})
+    if review.get("condition_columns"):
+        ref = conds.get("reference") or {}
+        doc.add_paragraph(
+            "Test conditions recorded: " + ", ".join(review["condition_columns"]) + ". Reference condition set used: "
+            + (", ".join(f"{k}={v}" for k, v in ref.items()) if ref else "not applicable") + "."
+        )
+    rep = review.get("replicates") or {}
+    if rep:
+        doc.add_paragraph(
+            f"Replicate rows with differing targets: {rep.get('groups_with_differing_targets', 0)} input set(s); "
+            f"largest spread {rep.get('max_spread_fraction_of_range', 0):.0%} of the target range. Sets above "
+            f"{rep.get('conflict_threshold_fraction', 0):.0%} are blocked for review (threshold status: "
+            f"{rep.get('threshold_status', 'heuristic')})."
+        ).runs[0].font.size = Pt(9)
+    warns = [f for f in review.get("flags", []) if f.get("severity") == "warning"]
+    if warns:
+        doc.add_paragraph("Review warnings recorded at intake:")
+        for f in warns:
+            doc.add_paragraph(f"[{f['code']}] {f['message']}", style="List Bullet")
+
+
+def _unit_and_provenance_gaps(spec, ctx):
+    review = ctx.get("ingestion_review")
+    if not review:
+        return [
+            "Units of measure and test conditions are not recorded or verified by this system; the customer's "
+            "historical data is used as supplied.",
+            "Row-level source provenance (source document, page or table) is not recorded for the historical data.",
+        ]
+    cols = list(spec["feature_columns"]) + [spec["target_metric"]]
+    undeclared = [c for c in cols if not (review.get("units", {}).get(c) or {}).get("canonical")]
+    gaps = []
+    if undeclared:
+        gaps.append("No unit is recorded for: " + ", ".join(undeclared) + "; those values are used as supplied and "
+                    "their comparability is not verified.")
+    else:
+        gaps.append("Units are recorded for every modelled column (see Evidence intake review). Candidate input "
+                    "values are taken as supplied in those units and are not unit-checked.")
+    if not review.get("condition_columns"):
+        gaps.append("No test-condition columns were declared at intake, so test conditions are not recorded or "
+                    "compared by this system.")
+    prov = review.get("provenance_columns") or []
+    if prov:
+        gaps.append("Source document/page/table information is held only in the stored file's columns ("
+                    + ", ".join(prov) + "); it is not stored as structured per-row records or used by the model.")
+    else:
+        gaps.append("Row-level source provenance (source document, page or table) is not recorded for the "
+                    "historical data.")
+    return gaps
+
+
 def _evidence_gaps(ranked_results, ctx):
     """Evidence gaps stated from facts already in the system -- no new
     heuristics or thresholds. Returns a list of plain-language bullets."""
@@ -202,9 +313,7 @@ def _evidence_gaps(ranked_results, ctx):
         "Only these input features are modelled: " + ", ".join(spec["feature_columns"]) +
         ". Any other property relevant to qualification is not evaluated by this analysis.",
         f"Only one requirement is analysed ({spec['target_metric']}). Other qualification requirements are not evaluated.",
-        "Units of measure and test conditions are not recorded or verified by this system; the customer's "
-        "historical data is used as supplied.",
-        "Row-level source provenance (source document, page or table) is not recorded for the historical data.",
+        *_unit_and_provenance_gaps(spec, ctx),
         "Range coverage is checked per feature, not jointly: a candidate inside every individual range can "
         "still lie in a region of the combined input space with no historical evidence.",
     ]
@@ -288,6 +397,7 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
 
     if audit_context:
         _add_requirement_and_record(doc, audit_context)
+        _add_ingestion_review(doc, audit_context)
 
     doc.add_heading("Ranked Candidates", level=1)
     if not ranked_results:

@@ -55,7 +55,7 @@ from backend.app.repositories import (
     subscriptions_repo,
 )
 
-from backend.app.services import change_case_rules
+from backend.app.services import change_case_rules, evidence_rules
 
 from backend.app.schemas.errors import ValidationError
 
@@ -67,6 +67,11 @@ def create_change_case(organization_id: int, created_by_user_id: int, name: str,
                        trigger_type: str, restricted_substance: str,
                        qualification_spec: dict) -> dict:
 
+    # B3: optional 'units' in the spec are the canonical units the dataset and
+    # candidate inputs are expressed in. Absent = unchanged behaviour.
+    spec_problem = evidence_rules.validate_spec_extensions(qualification_spec)
+    if spec_problem:
+        raise ValidationError(spec_problem, field="qualification_spec")
     change_case_id = change_case_repo.create_change_case(
         organization_id, created_by_user_id, name, trigger_type,
         restricted_substance, json.dumps(qualification_spec),
@@ -200,8 +205,14 @@ def _compute_evidence_metrics(spec: dict, experiments: list) -> tuple:
     never a stored value) rather than duplicating rank_change_case's
     already-tested logic in place."""
     feature_columns = spec["feature_columns"]
-    X = np.array([[json.loads(e["features_json"])[col] for col in feature_columns] for e in experiments])
-    y = np.array([e["target_value"] for e in experiments])
+    # C2: exact duplicate rows are counted by the data-quality check but must not
+    # inflate the evidence the model is fit/scored on (a repeated point would make
+    # its region look better-supported than the distinct evidence is).
+    fit_rows = change_case_rules.deduplicate_rows([
+        {"features": json.loads(e["features_json"]), "target_value": e["target_value"]} for e in experiments
+    ])
+    X = np.array([[r["features"][col] for col in feature_columns] for r in fit_rows])
+    y = np.array([r["target_value"] for r in fit_rows])
     from engine.facade import compute_model_metrics, compute_uncertainty_calibration
     model_quality = compute_model_metrics(X, y)
     uncertainty_calibration = (
@@ -281,8 +292,14 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
 
     historical_ranges = _historical_ranges(spec, experiments)  # same dataset the predictions are stamped with
 
-    X = np.array([[json.loads(e["features_json"])[col] for col in feature_columns] for e in experiments])
-    y = np.array([e["target_value"] for e in experiments])
+    # C2: fit and score on DISTINCT rows only (see _compute_evidence_metrics).
+    # historical_ranges above deliberately still uses all rows: removing exact
+    # duplicates cannot change a min/max.
+    fit_rows = change_case_rules.deduplicate_rows([
+        {"features": json.loads(e["features_json"]), "target_value": e["target_value"]} for e in experiments
+    ])
+    X = np.array([[r["features"][col] for col in feature_columns] for r in fit_rows])
+    y = np.array([r["target_value"] for r in fit_rows])
 
     from engine.facade import compute_model_metrics, compute_uncertainty_calibration
     model_quality = compute_model_metrics(X, y)
@@ -483,6 +500,9 @@ def _build_report_audit_context(organization_id: int, change_case_id: int, case:
         "spec": spec,
         "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         "dataset": dataset,
+        "ingestion_review": (
+            json.loads(dataset["review_json"]) if dataset and dataset.get("review_json") else None
+        ),
         "model_versions": sorted({p["model_version"] for p in predictions}),
         "ranked_at_utc": max((p["created_at"] for p in predictions), default=None),
         "candidates": [

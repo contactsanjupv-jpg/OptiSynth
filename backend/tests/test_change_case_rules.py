@@ -317,6 +317,46 @@ class TestFiniteValueChecks(unittest.TestCase):
         )  # must not raise
 
 
+
+class TestDeduplicateRows(unittest.TestCase):
+    """C2: exact duplicate rows are removed from the model fit using the same
+    key the data-quality check counts duplicates with."""
+
+    def _r(self, f, t):
+        return {"features": dict(f), "target_value": t}
+
+    def test_removes_exact_duplicates_keeping_first_in_order(self):
+        rows = [self._r({"a": 1}, 5), self._r({"a": 2}, 6), self._r({"a": 1}, 5), self._r({"a": 3}, 7), self._r({"a": 2}, 6)]
+        out = change_case_rules.deduplicate_rows(rows)
+        self.assertEqual([(r["features"]["a"], r["target_value"]) for r in out], [(1, 5), (2, 6), (3, 7)])
+
+    def test_same_inputs_different_target_is_not_a_duplicate(self):
+        rows = [self._r({"a": 1}, 5), self._r({"a": 1}, 9)]
+        self.assertEqual(len(change_case_rules.deduplicate_rows(rows)), 2)
+
+    def test_same_target_different_inputs_is_not_a_duplicate(self):
+        rows = [self._r({"a": 1, "b": 2}, 5), self._r({"a": 1, "b": 3}, 5)]
+        self.assertEqual(len(change_case_rules.deduplicate_rows(rows)), 2)
+
+    def test_no_duplicates_returns_equal_content_and_does_not_mutate_input(self):
+        rows = [self._r({"a": i}, i) for i in range(4)]
+        snapshot = [dict(r) for r in rows]
+        out = change_case_rules.deduplicate_rows(rows)
+        self.assertEqual(out, rows)
+        self.assertEqual(rows, snapshot)
+
+    def test_empty_input(self):
+        self.assertEqual(change_case_rules.deduplicate_rows([]), [])
+
+    def test_feature_key_order_does_not_matter(self):
+        rows = [self._r({"a": 1, "b": 2}, 5), self._r({"b": 2, "a": 1}, 5)]
+        self.assertEqual(len(change_case_rules.deduplicate_rows(rows)), 1)
+
+    def test_removed_count_equals_data_quality_duplicate_count(self):
+        rows = [self._r({"a": i % 4}, (i % 4) * 2) for i in range(11)]
+        dup, _ = change_case_rules.compute_data_quality_metrics(rows, ["a"])
+        self.assertEqual(len(rows) - len(change_case_rules.deduplicate_rows(rows)), dup)
+
 if __name__ == "__main__":
     unittest.main()
 

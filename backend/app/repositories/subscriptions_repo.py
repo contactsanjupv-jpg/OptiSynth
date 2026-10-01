@@ -20,3 +20,14 @@ def get_subscription(organization_id: int):
             {"org_id": organization_id},
         ).mappings().first()
         return dict(row) if row else None
+
+
+def set_plan_and_status(organization_id: int, plan: str, status: str) -> None:
+    """Direct plan/status write used by the operator activation path. Does not
+    touch any billing-provider column."""
+    with db_transaction() as conn:
+        conn.execute(
+            text("""UPDATE subscriptions SET plan = :plan, status = :status, updated_at = :updated_at
+                     WHERE organization_id = :org_id"""),
+            {"plan": plan, "status": status, "updated_at": now_iso(), "org_id": organization_id},
+        )

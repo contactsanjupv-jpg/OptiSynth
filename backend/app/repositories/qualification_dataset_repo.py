@@ -7,17 +7,18 @@ from backend.app.repositories._time import now_iso
 
 
 def create_qualification_dataset(organization_id: int, change_case_id: int, uploaded_by_user_id: int,
-                                  original_filename: str, stored_filename: str, row_count: int) -> int:
+                                  original_filename: str, stored_filename: str, row_count: int,
+                                  review_json: str = None) -> int:
     with db_transaction() as conn:
         row = conn.execute(
             text("""INSERT INTO qualification_datasets
                      (organization_id, change_case_id, uploaded_by_user_id, original_filename,
-                      stored_filename, row_count, created_at)
+                      stored_filename, row_count, review_json, created_at)
                      VALUES (:org_id, :change_case_id, :uploaded_by, :original_filename,
-                             :stored_filename, :row_count, :created_at) RETURNING id"""),
+                             :stored_filename, :row_count, :review_json, :created_at) RETURNING id"""),
             {"org_id": organization_id, "change_case_id": change_case_id, "uploaded_by": uploaded_by_user_id,
              "original_filename": original_filename, "stored_filename": stored_filename,
-             "row_count": row_count, "created_at": now_iso()},
+             "row_count": row_count, "review_json": review_json, "created_at": now_iso()},
         ).mappings().first()
         return row["id"]
 

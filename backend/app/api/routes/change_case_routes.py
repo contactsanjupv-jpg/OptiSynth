@@ -6,7 +6,7 @@ change_case_service.py / change_case_rules.py), audit-logged on writes.
 """
 import json
 
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, UploadFile, File, Form
 from fastapi.responses import FileResponse
 
 from backend.app.schemas.errors import ValidationError
@@ -52,8 +52,26 @@ async def update_status(change_case_id: int, body: UpdateStatusRequest,
     return result
 
 
+@router.post("/{change_case_id}/dataset/preview")
+async def preview_qualification_dataset(change_case_id: int, file: UploadFile = File(...),
+                                         options: str | None = Form(None),
+                                         actor: AuthContext = Depends(get_current_actor)):
+    """Evidence-intake review without storing anything: proposed column
+    mappings, unit/condition/conflict findings, and whether the file would be
+    accepted. `options` is an optional JSON object (column_mapping,
+    declared_units, condition_columns, reference_conditions, exclude_rows,
+    exclusion_reason)."""
+    case = change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)
+    if not file.filename:
+        raise ValidationError("No file was selected.")
+    file_bytes = await file.read()
+    spec = json.loads(case["qualification_spec_json"])
+    return qualification_dataset_service.preview_qualification_csv(spec, file.filename, file_bytes, options)
+
+
 @router.post("/{change_case_id}/dataset", status_code=201)
 async def upload_qualification_dataset(change_case_id: int, file: UploadFile = File(...),
+                                        options: str | None = Form(None),
                                         actor: AuthContext = Depends(get_current_actor)):
     case = change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)
     if not file.filename:
@@ -61,7 +79,7 @@ async def upload_qualification_dataset(change_case_id: int, file: UploadFile = F
     file_bytes = await file.read()
     spec = json.loads(case["qualification_spec_json"])
     result = qualification_dataset_service.ingest_qualification_csv(
-        actor.organization_id, change_case_id, actor.user["id"], spec, file.filename, file_bytes,
+        actor.organization_id, change_case_id, actor.user["id"], spec, file.filename, file_bytes, options,
     )
     # Never log raw dataset contents -- only the row count, matching
     # dataset_routes.py's exact discipline for the original domain.
