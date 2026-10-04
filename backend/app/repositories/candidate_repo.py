@@ -11,15 +11,15 @@ from backend.app.repositories._time import now_iso
 # ---------------------------------------------------------------------------
 
 def create_candidate(organization_id: int, change_case_id: int, candidate_name: str,
-                      properties: dict) -> int:
+                      properties: dict, input_json: str = None) -> int:
     with db_transaction() as conn:
         row = conn.execute(
             text("""INSERT INTO candidate_substitutes
-                     (organization_id, change_case_id, candidate_name, properties_json, created_at)
-                     VALUES (:org_id, :change_case_id, :name, :properties_json, :created_at)
+                     (organization_id, change_case_id, candidate_name, properties_json, input_json, created_at)
+                     VALUES (:org_id, :change_case_id, :name, :properties_json, :input_json, :created_at)
                      RETURNING id"""),
             {"org_id": organization_id, "change_case_id": change_case_id, "name": candidate_name,
-             "properties_json": json.dumps(properties), "created_at": now_iso()},
+             "properties_json": json.dumps(properties), "input_json": input_json, "created_at": now_iso()},
         ).mappings().first()
         return row["id"]
 

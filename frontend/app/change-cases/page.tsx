@@ -38,8 +38,11 @@ export default function ChangeCasesPage() {
   const [name, setName] = useState("");
   const [triggerType, setTriggerType] = useState<TriggerType>("regulatory_restriction");
   const [restrictedSubstance, setRestrictedSubstance] = useState("");
-  const [featureColumns, setFeatureColumns] = useState("");
+  // Canonical fields: the names/units the analysis is defined in. The customer's own
+  // file headers are mapped onto these in the evidence review -- they do NOT need to match.
+  const [features, setFeatures] = useState<{ name: string; unit: string }[]>([{ name: "", unit: "" }]);
   const [targetMetric, setTargetMetric] = useState("");
+  const [targetUnit, setTargetUnit] = useState("");
   const [targetValue, setTargetValue] = useState("");
   const [direction, setDirection] = useState<"maximize" | "minimize">("maximize");
   const [creating, setCreating] = useState(false);
@@ -61,14 +64,30 @@ export default function ChangeCasesPage() {
     setError(null);
     setCreating(true);
     try {
-      const cols = featureColumns.split(",").map((c) => c.trim()).filter(Boolean);
+      const NAME_RE = /^[a-z][a-z0-9_]*$/;
+      const rows = features.map((f) => ({ name: f.name.trim(), unit: f.unit.trim() }));
+      const bad = [...rows.map((r) => r.name), targetMetric.trim()].find((n) => !NAME_RE.test(n));
+      if (bad !== undefined) {
+        setError(`Field name "${bad}" is not valid. Use lower-case letters, digits and underscores, starting with a letter (e.g. cure_temp_c).`);
+        return;
+      }
+      const names = [...rows.map((r) => r.name), targetMetric.trim()];
+      if (new Set(names).size !== names.length) {
+        setError("Each input feature and the target need a different name.");
+        return;
+      }
+      const units: Record<string, string> = {};
+      rows.forEach((r) => { if (r.unit) units[r.name] = r.unit; });
+      if (targetUnit.trim()) units[targetMetric.trim()] = targetUnit.trim();
       await createChangeCase(name, triggerType, restrictedSubstance || null, {
-        feature_columns: cols,
+        feature_columns: rows.map((r) => r.name),
         target_metric: targetMetric.trim(),
         target_value: parseFloat(targetValue),
         direction,
+        ...(Object.keys(units).length ? { units } : {}),
       });
-      setName(""); setRestrictedSubstance(""); setFeatureColumns(""); setTargetMetric(""); setTargetValue("");
+      setName(""); setRestrictedSubstance(""); setFeatures([{ name: "", unit: "" }]);
+      setTargetMetric(""); setTargetUnit(""); setTargetValue("");
       setShowForm(false);
       load();
     } catch (err) {
@@ -80,10 +99,10 @@ export default function ChangeCasesPage() {
 
   return (
     <AppShell>
-      <Topbar><Breadcrumbs items={[{ label: "Change Cases" }]} /></Topbar>
+      <Topbar><Breadcrumbs items={[{ label: "Diagnostics" }]} /></Topbar>
       <div className="app-shell__content">
         <PageHeader
-          title="Change Cases"
+          title="Qualification diagnostics"
           subtitle="Forced-substitution qualification diagnostics -- when a material or supplier change forces a requalification decision."
         />
 
@@ -91,13 +110,13 @@ export default function ChangeCasesPage() {
 
         <div style={{ marginBottom: 16 }}>
           <Button variant="primary" onClick={() => setShowForm((s) => !s)}>
-            {showForm ? "Cancel" : "New change case"}
+            {showForm ? "Cancel" : "New diagnostic"}
           </Button>
         </div>
 
         {showForm && (
           <Card padding="lg" style={{ marginBottom: 20 }}>
-            <CardHeader><CardTitle>New change case</CardTitle></CardHeader>
+            <CardHeader><CardTitle>New diagnostic</CardTitle></CardHeader>
             <form onSubmit={handleCreate} style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 480 }}>
               <div>
                 <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Name</label>
@@ -118,43 +137,78 @@ export default function ChangeCasesPage() {
                   placeholder="e.g. PFAS-based fluorosurfactant leveling agent"
                   style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
               </div>
+              <p style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)", margin: 0 }}>
+                One diagnostic covers ONE qualification requirement. Define the fields the analysis uses below;
+                your own spreadsheet or report headers are matched to these in the evidence review, so they do
+                not have to be identical. Give every field a unit (leave it blank only for dimensionless values) --
+                values are converted only where an exact conversion exists, and are never guessed.
+              </p>
               <div>
                 <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>
-                  Feature columns (comma-separated -- must match your CSV headers)
+                  Input features (what you control or specify for a candidate)
                 </label>
-                <input required value={featureColumns} onChange={(e) => setFeatureColumns(e.target.value)}
-                  placeholder="e.g. crosslinker_ratio, cure_temp_c"
-                  style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
+                {features.map((f, i) => (
+                  <div key={i} style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                    <input required value={f.name} aria-label={`Feature ${i + 1} name`}
+                      onChange={(e) => setFeatures((fs) => fs.map((x, k) => (k === i ? { ...x, name: e.target.value } : x)))}
+                      placeholder="e.g. cure_temp_c"
+                      style={{ flex: 2, padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)" }} />
+                    <input value={f.unit} aria-label={`Feature ${i + 1} unit`}
+                      onChange={(e) => setFeatures((fs) => fs.map((x, k) => (k === i ? { ...x, unit: e.target.value } : x)))}
+                      placeholder="unit, e.g. degC"
+                      style={{ flex: 1, padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)" }} />
+                    {features.length > 1 && (
+                      <Button type="button" size="sm" variant="ghost" onClick={() => setFeatures((fs) => fs.filter((_, k) => k !== i))}>
+                        Remove
+                      </Button>
+                    )}
+                  </div>
+                ))}
+                {features.length < 10 && (
+                  <div style={{ marginTop: 6 }}>
+                    <Button type="button" size="sm" variant="ghost" onClick={() => setFeatures((fs) => [...fs, { name: "", unit: "" }])}>
+                      Add another input feature
+                    </Button>
+                  </div>
+                )}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Target metric column</label>
+                <div style={{ flex: 2 }}>
+                  <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Requirement being tested (the target)</label>
                   <input required value={targetMetric} onChange={(e) => setTargetMetric(e.target.value)}
                     placeholder="e.g. salt_spray_hours"
                     style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
                 </div>
-                <div style={{ width: 120 }}>
-                  <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Target value</label>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Target unit</label>
+                  <input value={targetUnit} onChange={(e) => setTargetUnit(e.target.value)}
+                    placeholder="e.g. h"
+                    style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={{ width: 160 }}>
+                  <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Required value</label>
                   <input required type="number" step="any" value={targetValue} onChange={(e) => setTargetValue(e.target.value)}
                     placeholder="500"
                     style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
                 </div>
-                <div style={{ width: 130 }}>
+                <div style={{ width: 160 }}>
                   <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Direction</label>
                   <select value={direction} onChange={(e) => setDirection(e.target.value as "maximize" | "minimize")}
                     style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }}>
-                    <option value="maximize">Maximize</option>
-                    <option value="minimize">Minimize</option>
+                    <option value="maximize">At or above</option>
+                    <option value="minimize">At or below</option>
                   </select>
                 </div>
               </div>
-              <Button type="submit" variant="primary" loading={creating}>Create change case</Button>
+              <Button type="submit" variant="primary" loading={creating}>Create diagnostic</Button>
             </form>
           </Card>
         )}
 
         <Card padding="lg">
-          <CardHeader><CardTitle>All change cases</CardTitle></CardHeader>
+          <CardHeader><CardTitle>All diagnostics</CardTitle></CardHeader>
           {!cases && <Spinner label="Loading change cases…" />}
           {cases && cases.length === 0 && (
             <p style={{ fontSize: "var(--text-sm)", color: "var(--color-text-tertiary)" }}>

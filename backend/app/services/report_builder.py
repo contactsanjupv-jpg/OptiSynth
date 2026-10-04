@@ -174,6 +174,22 @@ def _add_requirement_and_record(doc, ctx):
             row[0].text = c["candidate_name"]
             for i, col in enumerate(spec["feature_columns"], start=1):
                 row[i].text = str(c["properties"].get(col, ""))
+        spec_units = spec.get("units") or {}
+        if spec_units or any(c.get("input_record") for c in cands):
+            doc.add_paragraph(
+                "Values above are in the case's canonical units"
+                + (": " + ", ".join(f"{k} in {v}" for k, v in spec_units.items()) if spec_units else "")
+                + ". Candidate values are entered with a unit and converted only by an exact factor; the "
+                "original entry is kept in the record."
+            ).runs[0].font.size = Pt(9)
+            for c in cands:
+                rec = c.get("input_record") or {}
+                conv = [
+                    f"{col}: entered {e['value']} {e['unit']} -> {e['converted_value']} {e['converted_unit']}"
+                    for col, e in rec.items() if e.get("converted_unit") and e.get("unit") != e.get("converted_unit")
+                ]
+                if conv:
+                    doc.add_paragraph(f"{c['candidate_name']} -- " + "; ".join(conv), style="List Bullet")
 
 
 def _add_ingestion_review(doc, ctx):
@@ -200,7 +216,22 @@ def _add_ingestion_review(doc, ctx):
     excl = review.get("exclusions", {})
     if excl.get("reason"):
         rows.append(("Reviewer exclusion reason", excl["reason"]))
+    source = review.get("source")
+    if source:
+        rows.insert(0, ("Source file", f"{source.get('file', '')} ({str(source.get('kind', '')).upper()})"))
+        for t in source.get("tables", []):
+            label = f"{t['location']} (header at source row {t['header_row']}, {t['data_rows']} data rows)"
+            if t.get("confidence") == "text_layout":
+                label += " -- table INFERRED from PDF text layout"
+            rows.insert(1, ("Table used", label))
+            if t.get("caption"):
+                rows.insert(2, ("Context shown near the table", t["caption"]))
     _kv_table(doc, rows)
+    if source:
+        doc.add_paragraph(
+            "Every historical record carries a source reference (file, table, source row) in the stored evidence "
+            "record, so each value can be traced to a place in the file the customer supplied."
+        ).runs[0].font.size = Pt(9)
 
     mapping = review.get("column_mapping", {})
     if mapping:
@@ -278,7 +309,14 @@ def _unit_and_provenance_gaps(spec, ctx):
         gaps.append("No test-condition columns were declared at intake, so test conditions are not recorded or "
                     "compared by this system.")
     prov = review.get("provenance_columns") or []
-    if prov:
+    if review.get("source"):
+        text = ("Row-level source provenance is recorded for every historical record as file, table and row "
+                "reference. The original report, page or test certificate a value was transcribed from is "
+                "traceable only as far as the uploaded file")
+        if prov:
+            text += " and its own source columns (" + ", ".join(prov) + ")"
+        gaps.append(text + "; source columns are not used by the model.")
+    elif prov:
         gaps.append("Source document/page/table information is held only in the stored file's columns ("
                     + ", ".join(prov) + "); it is not stored as structured per-row records or used by the model.")
     else:

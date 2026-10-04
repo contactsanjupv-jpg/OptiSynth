@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { AppShell } from "@/components/layout/AppShell";
 import { Topbar } from "@/components/layout/Topbar";
@@ -12,11 +13,13 @@ import { Badge } from "@/components/ui/Badge";
 import { ErrorCallout, Spinner } from "@/components/ui/Feedback";
 import { useRequireAuth } from "@/lib/auth/useRequireAuth";
 import {
-  getChangeCase, uploadQualificationDataset, addCandidate, listCandidates,
+  getChangeCase, addCandidate, listCandidates, listEvidence, getSufficiency, parseSpec,
   rankChangeCase, recordOutcome, generateQualificationReport,
 } from "@/lib/api";
 import { ApiRequestError } from "@/lib/api/http";
-import type { ChangeCase, Candidate, DecisionSupport, DomainStatus } from "@/lib/api/change-cases";
+import type {
+  ChangeCase, Candidate, DecisionSupport, DomainStatus, EvidenceInventoryItem, QualificationSpec, Sufficiency,
+} from "@/lib/api/change-cases";
 
 // The model-estimated probability alone must never produce an approval-style
 // (green) treatment: a candidate far outside the historical range can still
@@ -49,12 +52,16 @@ export default function ChangeCaseDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
 
-  const [uploading, setUploading] = useState(false);
+  const [spec, setSpec] = useState<QualificationSpec | null>(null);
+  const [evidence, setEvidence] = useState<EvidenceInventoryItem[] | null>(null);
+  const [sufficiency, setSufficiency] = useState<Sufficiency | null>(null);
+
   const [ranking, setRanking] = useState(false);
   const [generatingReport, setGeneratingReport] = useState(false);
 
   const [candName, setCandName] = useState("");
-  const [candFeatures, setCandFeatures] = useState(""); // "key=value, key=value"
+  const [candValues, setCandValues] = useState<Record<string, string>>({});
+  const [candUnits, setCandUnits] = useState<Record<string, string>>({});
   const [addingCandidate, setAddingCandidate] = useState(false);
 
   const [outcomeCandidateId, setOutcomeCandidateId] = useState<number | null>(null);
@@ -63,8 +70,12 @@ export default function ChangeCaseDetailPage() {
 
   function load() {
     setError(null);
-    getChangeCase(changeCaseId).then(setChangeCase).catch(() => setError("Could not load this change case."));
+    getChangeCase(changeCaseId)
+      .then((c) => { setChangeCase(c); setSpec(parseSpec(c)); })
+      .catch(() => setError("Could not load this change case."));
     listCandidates(changeCaseId).then(setCandidates).catch(() => setError("Could not load candidates."));
+    listEvidence(changeCaseId).then(setEvidence).catch(() => setError("Could not load the evidence inventory."));
+    getSufficiency(changeCaseId).then(setSufficiency).catch(() => setSufficiency(null));
   }
 
   useEffect(() => {
@@ -74,33 +85,30 @@ export default function ChangeCaseDetailPage() {
 
   if (checking) return null;
 
-  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setError(null); setInfo(null); setUploading(true);
-    try {
-      const result = await uploadQualificationDataset(changeCaseId, file);
-      setInfo(`Ingested ${result.rows_ingested} rows${result.rows_skipped ? ` (${result.rows_skipped} skipped)` : ""}.`);
-    } catch (err) {
-      setError(err instanceof ApiRequestError ? err.message : "Upload failed.");
-    } finally {
-      setUploading(false);
-      e.target.value = "";
-    }
-  }
-
   async function handleAddCandidate(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setAddingCandidate(true);
     try {
-      const features: Record<string, number> = {};
-      for (const pair of candFeatures.split(",")) {
-        const [k, v] = pair.split("=").map((s) => s.trim());
-        if (k && v !== undefined) features[k] = parseFloat(v);
+      if (!spec) {
+        setError("The diagnostic definition has not loaded yet. Reload the page and try again.");
+        return;
       }
-      await addCandidate(changeCaseId, candName, features);
-      setCandName(""); setCandFeatures("");
+      const features: Record<string, number> = {};
+      const units: Record<string, string> = {};
+      for (const col of spec.feature_columns) {
+        const raw = (candValues[col] ?? "").trim();
+        const n = Number(raw);
+        if (raw === "" || !Number.isFinite(n)) {
+          setError(`Enter a number for ${col}.`);
+          return;
+        }
+        features[col] = n;
+        const u = (candUnits[col] ?? "").trim();
+        if (u) units[col] = u;
+      }
+      await addCandidate(changeCaseId, candName, features, units);
+      setCandName(""); setCandValues({}); setCandUnits({});
       load();
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : "Could not add candidate.");
@@ -168,12 +176,42 @@ export default function ChangeCaseDetailPage() {
         )}
 
         <Card padding="lg" style={{ marginBottom: 20 }}>
-          <CardHeader><CardTitle>1. Historical qualification dataset</CardTitle></CardHeader>
+          <CardHeader><CardTitle>1. Customer evidence</CardTitle></CardHeader>
           <p style={{ fontSize: "var(--text-sm)", color: "var(--color-text-tertiary)", marginBottom: 10 }}>
-            Upload a CSV with your qualification spec&apos;s feature columns and target metric.
+            Import the customer&apos;s historical qualification evidence (CSV, XLSX, Word or PDF tables). It is reviewed — table,
+            columns, units, test conditions, conflicts — and only evidence you accept reaches the model.
           </p>
-          <input type="file" accept=".csv" onChange={handleUpload} disabled={uploading} />
-          {uploading && <Spinner label="Uploading…" />}
+          {spec && (
+            <p style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)", marginBottom: 10 }}>
+              Requirement analysed: <strong>{spec.target_metric}{spec.units?.[spec.target_metric] ? ` (${spec.units[spec.target_metric]})` : ""}</strong>{" "}
+              {spec.direction === "maximize" ? "at or above" : "at or below"} <strong>{spec.target_value}</strong>. Input features:{" "}
+              {spec.feature_columns.map((f) => `${f}${spec.units?.[f] ? ` (${spec.units[f]})` : ""}`).join(", ")}.
+            </p>
+          )}
+          {!evidence && <Spinner label="Loading evidence…" />}
+          {evidence && evidence.length === 0 && (
+            <p style={{ fontSize: "var(--text-sm)", color: "var(--color-text-tertiary)" }}>No evidence has been accepted yet.</p>
+          )}
+          {evidence && evidence.map((ev) => (
+            <div key={ev.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--color-border)", fontSize: "var(--text-xs)" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <strong style={{ fontSize: "var(--text-sm)" }}>{ev.original_filename}</strong>
+                {ev.is_current && <Badge tone="accent">used for analysis</Badge>}
+                {!ev.has_review_record && <Badge tone="warning">no review record</Badge>}
+              </div>
+              <div style={{ color: "var(--color-text-tertiary)" }}>
+                {ev.row_count} records
+                {ev.source?.tables.map((t) => ` · ${t.location} (header row ${t.header_row})`).join("")}
+                {ev.warning_count > 0 && ` · ${ev.warning_count} note(s) recorded`}
+                {ev.file_sha256 && ` · SHA-256 ${ev.file_sha256.slice(0, 12)}…`}
+              </div>
+            </div>
+          ))}
+          <div style={{ marginTop: 12 }}>
+            <Link href={`/change-cases/${changeCaseId}/intake`}>
+              <Button variant="primary">Import and review evidence</Button>
+            </Link>
+          </div>
         </Card>
 
         <Card padding="lg" style={{ marginBottom: 20 }}>
@@ -185,13 +223,25 @@ export default function ChangeCaseDetailPage() {
                 placeholder="e.g. EcoShield SF-100"
                 style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
             </div>
-            <div style={{ flex: 1, minWidth: 240 }}>
-              <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Features (key=value, comma-separated)</label>
-              <input required value={candFeatures} onChange={(e) => setCandFeatures(e.target.value)}
-                placeholder="e.g. crosslinker_ratio=0.16, cure_temp_c=178"
-                style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
-            </div>
-            <Button type="submit" variant="secondary" loading={addingCandidate}>Add candidate</Button>
+            {(spec?.feature_columns ?? []).map((col) => (
+              <div key={col} style={{ minWidth: 150 }}>
+                <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>{col}</label>
+                <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                  <input required type="number" step="any" value={candValues[col] ?? ""}
+                    onChange={(e) => setCandValues((v) => ({ ...v, [col]: e.target.value }))}
+                    style={{ width: 90, padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)" }} />
+                  {spec?.units?.[col] && (
+                    <input required value={candUnits[col] ?? ""} aria-label={`${col} unit`}
+                      onChange={(e) => setCandUnits((u) => ({ ...u, [col]: e.target.value }))}
+                      placeholder={spec.units[col]}
+                      style={{ width: 70, padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)" }} />
+                  )}
+                </div>
+              </div>
+            ))}
+            <Button type="submit" variant="secondary" loading={addingCandidate} disabled={!spec || (candidates?.length ?? 0) >= 5}>
+              Add candidate
+            </Button>
           </form>
 
           {!candidates && <Spinner label="Loading candidates…" />}
@@ -204,8 +254,15 @@ export default function ChangeCaseDetailPage() {
                 <div>
                   <div style={{ fontSize: "var(--text-sm)", fontWeight: 500 }}>{c.candidate_name}</div>
                   <div style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)" }}>
-                    {Object.entries(c.properties).map(([k, v]) => `${k}=${v}`).join(", ")}
+                    {Object.entries(c.properties).map(([k, v]) => `${k}=${v}${spec?.units?.[k] ? ` ${spec.units[k]}` : ""}`).join(", ")}
                   </div>
+                  {c.input_record && Object.entries(c.input_record).some(([, e]) => e.converted_unit && e.unit !== e.converted_unit) && (
+                    <div style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)" }}>
+                      Entered as: {Object.entries(c.input_record)
+                        .filter(([, e]) => e.converted_unit && e.unit !== e.converted_unit)
+                        .map(([k, e]) => `${k} ${e.value} ${e.unit} → ${e.converted_value} ${e.converted_unit}`).join("; ")}
+                    </div>
+                  )}
                 </div>
                 {c.latest_prediction && (
                   <div style={{ textAlign: "right" }}>
@@ -266,8 +323,31 @@ export default function ChangeCaseDetailPage() {
             </p>
           )}
 
+          {sufficiency && (
+            <div style={{ marginTop: 16, padding: 12, border: "1px solid var(--color-border)", borderRadius: "var(--radius-sm)" }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                <strong style={{ fontSize: "var(--text-sm)" }}>Evidence sufficiency</strong>
+                <Badge tone={sufficiency.can_rank ? "neutral" : "danger"}>
+                  {sufficiency.can_rank ? "Evidence can support an analysis" : "Analysis stopped — evidence insufficient"}
+                </Badge>
+              </div>
+              {sufficiency.checks.filter((c) => c.status !== "pass").map((c) => (
+                <div key={c.code} style={{ fontSize: "var(--text-xs)", padding: "3px 0" }}>
+                  <Badge tone={c.status === "fail" ? "danger" : "warning"}>{c.status === "fail" ? "Missing" : "Note"}</Badge>{" "}
+                  <strong>{c.title}.</strong> {c.detail}
+                </div>
+              ))}
+              {sufficiency.checks.every((c) => c.status === "pass") && (
+                <div style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)" }}>
+                  All {sufficiency.checks.length} checks passed ({sufficiency.summary.distinct_rows} distinct records, {sufficiency.summary.features} input features).
+                </div>
+              )}
+            </div>
+          )}
+
           <div style={{ marginTop: 16 }}>
-            <Button variant="primary" onClick={handleRank} loading={ranking} disabled={!candidates || candidates.length === 0}>
+            <Button variant="primary" onClick={handleRank} loading={ranking}
+              disabled={!candidates || candidates.length === 0 || (sufficiency !== null && !sufficiency.can_rank)}>
               Run ranking
             </Button>
           </div>

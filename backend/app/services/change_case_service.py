@@ -108,7 +108,7 @@ def update_status(organization_id: int, change_case_id: int, new_status: str) ->
     return change_case_repo.get_change_case(organization_id, change_case_id)
 
 
-def add_candidate(organization_id: int, change_case_id: int, name: str, features: dict) -> dict:
+def add_candidate(organization_id: int, change_case_id: int, name: str, features: dict, units: dict = None) -> dict:
     case = get_change_case_or_404(organization_id, change_case_id)
     existing_count = candidate_repo.count_candidates_for_change_case(organization_id, change_case_id)
     change_case_rules.check_can_add_candidate(case["status"], existing_count)
@@ -119,8 +119,40 @@ def add_candidate(organization_id: int, change_case_id: int, name: str, features
     spec = json.loads(case["qualification_spec_json"])
     change_case_rules.check_candidate_features_complete(spec.get("feature_columns"), features, name)
     change_case_rules.check_candidate_features_finite(features, name)
-    candidate_id = candidate_repo.create_candidate(organization_id, change_case_id, name, features)
+    # Same canonical-unit discipline as the historical data: where the case
+    # declares a unit the candidate must state one and it is converted only by
+    # an exact factor; nothing is guessed. What was ENTERED is kept alongside.
+    converted, input_record, problems = evidence_rules.convert_candidate_inputs(spec, features, units)
+    if problems:
+        raise ValidationError(f"Candidate {name!r} was not added: " + " ".join(problems), field="features")
+    change_case_rules.check_candidate_features_finite(converted, name)
+    candidate_id = candidate_repo.create_candidate(
+        organization_id, change_case_id, name, converted,
+        input_json=json.dumps(input_record) if (units or spec.get("units")) else None,
+    )
     return candidate_repo.get_candidate(organization_id, candidate_id)
+
+
+def _assess_sufficiency(spec: dict, dataset, experiments: list, candidates: list) -> dict:
+    rows = [{"features": json.loads(e["features_json"]), "target_value": e["target_value"]} for e in experiments]
+    cands = [{"candidate_name": c["candidate_name"], "properties": json.loads(c["properties_json"])} for c in candidates]
+    review = json.loads(dataset["review_json"]) if dataset and dataset.get("review_json") else None
+    return change_case_rules.assess_evidence_sufficiency(
+        spec, rows, cands, has_dataset=dataset is not None, dataset_review=review,
+    )
+
+
+def get_evidence_sufficiency(organization_id: int, change_case_id: int) -> dict:
+    """Read-only: the same assessment the ranking gate enforces, for the
+    review screen. Ownership-checked like every other change-case read."""
+    case = get_change_case_or_404(organization_id, change_case_id)
+    spec = json.loads(case["qualification_spec_json"])
+    dataset = qualification_dataset_repo.get_latest_dataset_for_change_case(organization_id, change_case_id)
+    experiments = (
+        qualification_dataset_repo.list_experiments_for_dataset(organization_id, dataset["id"]) if dataset else []
+    )
+    candidates = candidate_repo.list_candidates_for_change_case(organization_id, change_case_id)
+    return _assess_sufficiency(spec, dataset, experiments, candidates)
 
 
 def _historical_ranges(spec: dict, experiments: list):
@@ -138,6 +170,7 @@ def list_candidates_with_predictions(organization_id: int, change_case_id: int) 
     ranges_by_dataset = {}
     for c in candidates:
         c["properties"] = json.loads(c["properties_json"])
+        c["input_record"] = json.loads(c["input_json"]) if c.get("input_json") else None
         c["latest_prediction"] = candidate_repo.get_latest_prediction_for_candidate(organization_id, c["id"])
         c["domain_coverage"] = None
         c["decision_support"] = None  # C1: None until a prediction exists
@@ -289,6 +322,17 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
         {"features": json.loads(e["features_json"]), "target_value": e["target_value"]}
         for e in experiments
     ])
+
+    # Evidence-sufficiency gate (hard stop). Runs after the older, more specific
+    # checks above so their messages are unchanged; it adds the explicit
+    # explanation of what is missing and the rows-vs-features rule.
+    sufficiency = _assess_sufficiency(spec, dataset, experiments, candidates)
+    if not sufficiency["can_rank"]:
+        raise ValidationError(
+            "Evidence-sufficiency gate: ranking was stopped because the evidence cannot support a responsible "
+            "analysis. " + " ".join(f"[{c['code']}] {c['detail']}" for c in sufficiency["blocking"]),
+            field="evidence",
+        )
 
     historical_ranges = _historical_ranges(spec, experiments)  # same dataset the predictions are stamped with
 
@@ -510,6 +554,7 @@ def _build_report_audit_context(organization_id: int, change_case_id: int, case:
                 "candidate_name": c["candidate_name"],
                 "properties": c["properties"],
                 "has_prediction": c.get("latest_prediction") is not None,
+                "input_record": c.get("input_record"),
             }
             for c in candidates
         ],

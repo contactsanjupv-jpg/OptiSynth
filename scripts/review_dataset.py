@@ -7,8 +7,12 @@ Usage:
     python3 scripts/review_dataset.py --org-id 12 --case-id 3 --file customer.csv
     python3 scripts/review_dataset.py --org-id 12 --case-id 3 --file customer.csv --options review.json
 
+Works for .csv, .xlsx, .docx (Word tables) and .pdf (text-based tables).
+
 review.json (all keys optional):
-    {"column_mapping": {"crosslinker_ratio": "Crosslinker Ratio"},
+    {"table_ref": "xlsx:Data",            # or "docx:t2", "pdf:p3t1", or a list of refs with identical headers
+     "header_row": 3,                      # source row holding the headers (single table only)
+     "column_mapping": {"crosslinker_ratio": "Crosslinker Ratio"},
      "declared_units": {"salt_spray_hours": "h"},
      "condition_columns": ["Test Temp"],
      "reference_conditions": {"Test Temp": "25"},

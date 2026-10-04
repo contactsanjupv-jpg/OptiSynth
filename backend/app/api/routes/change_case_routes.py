@@ -52,6 +52,33 @@ async def update_status(change_case_id: int, body: UpdateStatusRequest,
     return result
 
 
+@router.post("/{change_case_id}/evidence/extract")
+async def extract_evidence(change_case_id: int, file: UploadFile = File(...),
+                           actor: AuthContext = Depends(get_current_actor)):
+    """Step 1 of the evidence review: list the tables found in an uploaded
+    CSV / XLSX / DOCX / PDF, where each is, and how well its first row matches
+    the case's required columns. Display-only: stores nothing, selects nothing."""
+    case = change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)
+    if not file.filename:
+        raise ValidationError("No file was selected.")
+    file_bytes = await file.read()
+    spec = json.loads(case["qualification_spec_json"])
+    return qualification_dataset_service.extract_evidence_tables(spec, file.filename, file_bytes)
+
+
+@router.get("/{change_case_id}/evidence")
+async def list_evidence(change_case_id: int, actor: AuthContext = Depends(get_current_actor)):
+    """The evidence inventory for a change case (newest first; the first is current)."""
+    change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)
+    return qualification_dataset_service.list_dataset_summaries(actor.organization_id, change_case_id)
+
+
+@router.get("/{change_case_id}/sufficiency")
+async def evidence_sufficiency(change_case_id: int, actor: AuthContext = Depends(get_current_actor)):
+    """Can the current evidence support a responsible analysis? Same assessment the ranking gate enforces."""
+    return change_case_service.get_evidence_sufficiency(actor.organization_id, change_case_id)
+
+
 @router.post("/{change_case_id}/dataset/preview")
 async def preview_qualification_dataset(change_case_id: int, file: UploadFile = File(...),
                                          options: str | None = Form(None),
@@ -91,7 +118,9 @@ async def upload_qualification_dataset(change_case_id: int, file: UploadFile = F
 @router.post("/{change_case_id}/candidates", status_code=201)
 async def add_candidate(change_case_id: int, body: AddCandidateRequest,
                          actor: AuthContext = Depends(get_current_actor)):
-    candidate = change_case_service.add_candidate(actor.organization_id, change_case_id, body.name, body.features)
+    candidate = change_case_service.add_candidate(
+        actor.organization_id, change_case_id, body.name, body.features, body.units,
+    )
     audit_service.log(actor.organization_id, actor.user["id"], "candidate.add",
                        detail=f"change_case_id={change_case_id} candidate_name={body.name}")
     return candidate

@@ -57,7 +57,7 @@ function LoginPageInner() {
         displayName: res.user.display_name,
         organizationId: res.organization.id,
       });
-      router.push("/dashboard");
+      router.push("/change-cases");
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : "Something went wrong.");
     } finally {
@@ -76,7 +76,7 @@ function LoginPageInner() {
         displayName: res.user.display_name,
         organizationId: res.memberships[0]?.organization_id ?? 0,
       });
-      router.push("/dashboard");
+      router.push("/change-cases");
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : "Something went wrong.");
     } finally {

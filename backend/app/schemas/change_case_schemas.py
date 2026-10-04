@@ -33,6 +33,11 @@ class AddCandidateRequest(BaseModel):
         description="Candidate's known property values, keyed by the same "
         "feature column names used in the uploaded qualification dataset."
     )
+    units: dict[str, str] | None = Field(
+        default=None,
+        description="Unit for each feature value, required wherever the change case declares a canonical "
+        "unit for that feature. Converted only by an exact factor; never guessed.",
+    )
 
 
 class RecordOutcomeRequest(BaseModel):
@@ -80,6 +85,7 @@ class CandidateResponse(BaseModel):
     id: int
     candidate_name: str
     properties: dict
+    input_record: dict | None = None
     latest_prediction: PredictionResponse | None = None
     # Heuristic historical-range coverage, judged against the dataset the
     # latest prediction was generated from. None if not yet ranked.

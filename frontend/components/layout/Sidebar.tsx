@@ -2,24 +2,19 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import {
-  LayoutDashboard, FolderKanban, Database, FlaskConical, FileBarChart,
-  Users, CreditCard, Settings, CircleHelp, Atom, LogOut, ShieldCheck,
-} from "lucide-react";
+import { Users, Settings, Atom, LogOut, ShieldCheck } from "lucide-react";
 import { getSessionCache, clearSessionCache } from "@/lib/auth/session";
 import { logout } from "@/lib/api/auth";
 import { useEffect, useState } from "react";
 import "@/styles/components/sidebar.css";
 
+// Customer-facing navigation is the qualification diagnostic only. The earlier
+// optimization product's pages (Dashboard, Projects, Datasets, Experiments,
+// Reports, Billing) are deliberately not linked and are redirected in
+// next.config.js.
 const NAV_ITEMS = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/projects", label: "Projects", icon: FolderKanban },
-  { href: "/change-cases", label: "Change Cases", icon: ShieldCheck },
-  { href: "/datasets", label: "Datasets", icon: Database },
-  { href: "/experiments", label: "Experiments", icon: FlaskConical },
-  { href: "/reports", label: "Reports", icon: FileBarChart },
+  { href: "/change-cases", label: "Diagnostics", icon: ShieldCheck },
   { href: "/team", label: "Team", icon: Users },
-  { href: "/billing", label: "Billing", icon: CreditCard },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -66,10 +61,6 @@ export function Sidebar() {
       </nav>
 
       <div className="sidebar__footer">
-        <Link href="/help" className="sidebar__link sidebar__link--muted">
-          <CircleHelp size={17} strokeWidth={2} />
-          <span>Help</span>
-        </Link>
         {email && (
           <div className="sidebar__user">
             <div className="sidebar__user-avatar">{email.slice(0, 1).toUpperCase()}</div>

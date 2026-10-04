@@ -76,13 +76,15 @@ def bulk_create_qualification_experiments(organization_id: int, change_case_id: 
         conn.execute(
             text("""INSERT INTO qualification_experiments
                      (organization_id, change_case_id, qualification_dataset_id,
-                      features_json, target_value, created_at)
+                      features_json, target_value, provenance_json, created_at)
                      VALUES (:org_id, :change_case_id, :dataset_id, :features_json,
-                             :target_value, :created_at)"""),
+                             :target_value, :provenance_json, :created_at)"""),
             [
                 {"org_id": organization_id, "change_case_id": change_case_id,
                  "dataset_id": qualification_dataset_id, "features_json": json.dumps(r["features"]),
-                 "target_value": r["target_value"], "created_at": created_at}
+                 "target_value": r["target_value"],
+                 "provenance_json": json.dumps(r["provenance"]) if r.get("provenance") else None,
+                 "created_at": created_at}
                 for r in rows
             ],
         )

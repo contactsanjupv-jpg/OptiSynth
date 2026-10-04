@@ -3921,7 +3921,10 @@ class TestChangeCaseApi(unittest.TestCase):
         body = r.json()
         self.assertEqual(body["rows_ingested"], 14)
         self.assertEqual(body["rows_skipped"], 1)
-        self.assertEqual(body["errors"], [{"row": 15, "error": "Non-finite value (NaN or Infinity) in a required column."}])
+        self.assertEqual(len(body["errors"]), 1)
+        self.assertEqual(body["errors"][0]["row"], 15)
+        self.assertEqual(body["errors"][0]["error"], "Non-finite value (NaN or Infinity) in a required column.")
+        self.assertIn("row 16", body["errors"][0]["source"])  # source reference added with per-row provenance
         self.assertEqual(body["data_quality_status"], "valid")
 
     def test_upload_with_infinity_cell_skips_that_row(self):

@@ -46,6 +46,7 @@ MAX_ROWS_LISTED = 50  # bound the size of row lists stored in a review record
 ALLOWED_OPTION_KEYS = {
     "column_mapping", "declared_units", "condition_columns",
     "reference_conditions", "exclude_rows", "exclusion_reason",
+    "table_ref", "header_row",
 }
 
 
@@ -58,6 +59,20 @@ def _flag(severity, code, message, rows=None, column=None):
         if len(rows) > MAX_ROWS_LISTED:
             f["rows_truncated"] = True
     return f
+
+
+make_flag = _flag  # public name for other modules (evidence_extraction)
+
+
+def blocked_review(flags):
+    """A standard-shaped review record for a file that cannot even be turned
+    into rows yet (e.g. no table selected). Carries only flags; no rows."""
+    return {
+        "version": 1, "column_mapping": {}, "proposed_mapping": {}, "proposed_units": {},
+        "proposed_condition_columns": [], "ignored_columns": [], "provenance_columns": [],
+        "condition_columns": [], "units": {}, "conditions": {}, "exclusions": {}, "replicates": {},
+        "counts": {}, "flags": list(flags),
+    }
 
 
 def blocking_flags(flags):
@@ -181,12 +196,13 @@ def parse_quantity(cell):
 def _header_key(header):
     """Lower-case words with punctuation/underscores collapsed and any
     trailing '(unit)' / '[unit]' removed. Returns (key, unit_hint)."""
-    h = str(header or "").strip().lower()
+    h = str(header or "").strip()
     hint = None
     m = re.search(r"[\(\[]([^\)\]]*)[\)\]]\s*$", h)
     if m:
-        hint = m.group(1).strip() or None
+        hint = m.group(1).strip() or None  # original case kept: it is shown to the reviewer
         h = h[: m.start()]
+    h = h.lower()
     h = re.sub(r"[_\-\./]+", " ", h)
     h = re.sub(r"\s+", " ", h).strip()
     return h, hint
@@ -342,6 +358,16 @@ def validate_options(options):
         flags.append(_flag(BLOCKING, "INVALID_OPTIONS", "Option 'exclusion_reason' must be text."))
         reason = None
     clean["exclusion_reason"] = (reason or "").strip()
+    tr = options.get("table_ref")
+    if tr is not None and not (isinstance(tr, str) or (isinstance(tr, list) and all(isinstance(x, str) for x in tr))):
+        flags.append(_flag(BLOCKING, "INVALID_OPTIONS", "Option 'table_ref' must be text or a list of text."))
+        tr = None
+    clean["table_ref"] = tr
+    hr = options.get("header_row")
+    if hr is not None and (not isinstance(hr, int) or isinstance(hr, bool) or hr < 1):
+        flags.append(_flag(BLOCKING, "INVALID_OPTIONS", "Option 'header_row' must be a source row number (1 or more)."))
+        hr = None
+    clean["header_row"] = hr
     if clean["exclude_rows"] and not clean["exclusion_reason"]:
         flags.append(_flag(BLOCKING, "INVALID_OPTIONS",
                            "Excluding rows requires an 'exclusion_reason' so the exclusion is auditable."))
@@ -386,8 +412,28 @@ def _condition_key(cell):
     return text, str(cell).strip()
 
 
-def analyze_rows(spec, headers, data_rows, options):
-    """Runs the whole B2/B3 gate over already-decoded CSV text.
+def analyze_rows(spec, headers, data_rows, options, row_refs=None):
+    """Public entry: runs the B2/B3 gate (see _analyze_rows_impl) and, when
+    `row_refs` (one source reference per data row) is given, attaches source
+    provenance to every accepted row and a human-readable `row_sources` list
+    to every finding that names rows."""
+    review, rows_out, errors = _analyze_rows_impl(spec, headers, data_rows, options, row_refs)
+    if row_refs:
+        def src(i):
+            ref = row_refs[i - 1]
+            return f"{ref.get('location') or ref.get('table')} row {ref.get('row')}"
+        n = len(row_refs)
+        for f in review["flags"]:
+            if f.get("rows"):
+                f["row_sources"] = [src(r) for r in f["rows"] if 1 <= r <= n]
+        for e in errors:
+            if 1 <= e.get("row", 0) <= n:
+                e["source"] = src(e["row"])
+    return review, rows_out, errors
+
+
+def _analyze_rows_impl(spec, headers, data_rows, options, row_refs=None):
+    """Runs the whole B2/B3 gate over already-decoded rows.
 
     headers: list[str]; data_rows: list[dict header->cell string] in file order.
     Returns (review, rows_out, errors). `rows_out` is the ONLY evidence that may
@@ -432,6 +478,18 @@ def analyze_rows(spec, headers, data_rows, options):
         "version": 1,
         "column_mapping": {c: dict(i) for c, i in resolved.items()},
         "proposed_mapping": {c: p[0]["header"] for c, p in proposals.items() if len(p) == 1},
+        # Display-only unit hints taken from "(unit)" in the header text -- for the
+        # confirmed mapping AND for headers merely proposed, so the reviewer sees
+        # them next to the proposal. Never applied: units must be declared.
+        "proposed_units": {
+            c: hint
+            for c, header in (
+                {**{c: i["source_header"] for c, i in resolved.items()},
+                 **{c: p[0]["header"] for c, p in proposals.items() if len(p) == 1}}
+            ).items()
+            for hint in [_header_key(header)[1]] if hint
+        },
+        "proposed_condition_columns": [h for h in ignored if h in suspect],
         "ignored_columns": ignored,
         "provenance_columns": provenance,
         "condition_columns": cond_cols,
@@ -668,7 +726,9 @@ def analyze_rows(spec, headers, data_rows, options):
                         "skipped_unparseable": len(errors), "excluded_by_reviewer": len(excluded_by_operator),
                         "excluded_other_conditions": excluded_other_conditions}
     for r in rows_out:
-        r.pop("_row", None)
+        ri = r.pop("_row", None)
+        if row_refs and ri:
+            r["provenance"] = row_refs[ri - 1]
     if blocking_flags(flags):
         return review, [], errors
     return review, rows_out, errors
@@ -676,3 +736,48 @@ def analyze_rows(spec, headers, data_rows, options):
 
 def file_sha256(file_bytes):
     return hashlib.sha256(file_bytes).hexdigest()
+
+
+def convert_candidate_inputs(spec, features, units):
+    """Canonical-unit discipline for candidate inputs, same rules as the
+    historical data: where the case declares a canonical unit for a feature
+    the candidate MUST state a unit and it is converted only by an exact
+    factor; a unit the case cannot check is refused; nothing is guessed.
+
+    -> (features_in_canonical_units, input_record, problems)
+    `input_record` keeps what was entered (value + unit) and what it became,
+    so the audit trail never loses the original."""
+    spec_units = spec.get("units") or {}
+    units = units or {}
+    columns = list(spec.get("feature_columns") or [])
+    converted = dict(features)
+    record, problems = {}, []
+    for col in columns:
+        if col not in features:
+            continue
+        value = features[col]
+        raw_unit = units.get(col)
+        unit = raw_unit.strip() if isinstance(raw_unit, str) and raw_unit.strip() else None
+        entry = {"value": value, "unit": unit}
+        canonical = spec_units.get(col)
+        if canonical is None:
+            if unit is not None:
+                problems.append(
+                    f"{col}: this case has no canonical unit for {col!r}, so the unit {unit!r} cannot be checked "
+                    "against the historical data. Remove the unit, or declare the case's unit first."
+                )
+        elif unit is None:
+            problems.append(f"{col}: a unit is required -- this case uses {canonical!r}.")
+        else:
+            ok, v = convert_value(value, unit, canonical)
+            if not ok:
+                problems.append(f"{col}: unit {unit!r} cannot be safely converted to this case's unit {canonical!r}.")
+            else:
+                converted[col] = v
+                entry["converted_value"] = v
+                entry["converted_unit"] = canonical
+        record[col] = entry
+    for k in units:
+        if k not in columns:
+            problems.append(f"A unit was given for {k!r}, which is not a feature of this case.")
+    return converted, record, problems

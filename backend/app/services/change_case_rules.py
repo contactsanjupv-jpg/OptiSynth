@@ -537,3 +537,129 @@ def deduplicate_rows(rows: list) -> list:
         seen.add(key)
         kept.append(r)
     return kept
+
+
+# ---------------------------------------------------------------------------
+# Evidence-sufficiency gate: one explicit, explainable answer to "can this
+# evidence support a responsible analysis?". Pure; no database access.
+#
+# Hard stops (status "fail") reuse limits that already exist
+# (MIN_HISTORICAL_ROWS_FOR_PREDICTION, constant columns, candidate
+# completeness) plus ONE mathematically grounded rule: with fewer distinct
+# rows than (features + 1) the fit is underdetermined. Everything else is a
+# visible warning, never a silent pass. A candidate lying outside the
+# historical range is deliberately NOT a hard stop: forced substitutes often
+# do, and the product's honest answer for them is "requires validation".
+# ---------------------------------------------------------------------------
+SUFFICIENCY_PASS = "pass"
+SUFFICIENCY_FAIL = "fail"
+SUFFICIENCY_WARN = "warn"
+
+
+def _check(code, status, title, detail):
+    return {"code": code, "status": status, "title": title, "detail": detail}
+
+
+def assess_evidence_sufficiency(spec: dict, experiment_rows: list, candidates: list,
+                                has_dataset: bool, dataset_review: dict = None) -> dict:
+    """experiment_rows: [{"features": {...}, "target_value": float}] of the
+    CURRENT dataset. candidates: [{"candidate_name", "properties"}].
+    -> {"can_rank", "checks", "blocking", "warnings", "summary"}"""
+    feature_columns = list(spec.get("feature_columns") or [])
+    checks = []
+
+    if not has_dataset:
+        checks.append(_check("DATASET_PRESENT", SUFFICIENCY_FAIL, "Reviewed historical evidence",
+                             "No historical evidence has been accepted yet. Upload a file and complete the evidence "
+                             "review before ranking."))
+        distinct = []
+    else:
+        checks.append(_check("DATASET_PRESENT", SUFFICIENCY_PASS, "Reviewed historical evidence",
+                             "Historical evidence has been accepted through the intake review."))
+        distinct = deduplicate_rows(experiment_rows)
+
+        n = len(distinct)
+        if n < MIN_HISTORICAL_ROWS_FOR_PREDICTION:
+            checks.append(_check("MIN_DISTINCT_ROWS", SUFFICIENCY_FAIL, "Enough distinct historical records",
+                                 f"{n} distinct historical record(s); at least {MIN_HISTORICAL_ROWS_FOR_PREDICTION} are "
+                                 "required. Add evidence (more qualified trials / test results) before relying on a model."))
+        else:
+            checks.append(_check("MIN_DISTINCT_ROWS", SUFFICIENCY_PASS, "Enough distinct historical records",
+                                 f"{n} distinct historical records (minimum {MIN_HISTORICAL_ROWS_FOR_PREDICTION})."))
+
+        if n < len(feature_columns) + 1:
+            checks.append(_check("ROWS_VS_FEATURES", SUFFICIENCY_FAIL, "More records than input features",
+                                 f"{n} distinct record(s) cannot determine a model with {len(feature_columns)} input "
+                                 f"feature(s); at least {len(feature_columns) + 1} are needed. Reduce the features or "
+                                 "add evidence."))
+        else:
+            checks.append(_check("ROWS_VS_FEATURES", SUFFICIENCY_PASS, "More records than input features",
+                                 f"{n} distinct records for {len(feature_columns)} input feature(s)."))
+
+        _, constant = compute_data_quality_metrics(experiment_rows, feature_columns)
+        if constant:
+            checks.append(_check("CONSTANT_COLUMNS", SUFFICIENCY_FAIL, "Every input feature varies",
+                                 "These input features have the same value in every historical record, so nothing "
+                                 f"can be learned about them: {', '.join(constant)}."))
+        else:
+            checks.append(_check("CONSTANT_COLUMNS", SUFFICIENCY_PASS, "Every input feature varies",
+                                 "Every input feature takes more than one value in the historical records."))
+
+        targets = {r["target_value"] for r in experiment_rows}
+        if experiment_rows and len(targets) == 1:
+            checks.append(_check("TARGET_VARIATION", SUFFICIENCY_WARN, "Target value varies",
+                                 "Every historical record has the same target value; the model has no variation "
+                                 "to learn from and its estimates carry little information."))
+
+        if dataset_review is None:
+            checks.append(_check("REVIEW_RECORD", SUFFICIENCY_WARN, "Intake review on record",
+                                 "This dataset was uploaded before intake review records were kept: its column "
+                                 "mapping, units and conditions were not recorded."))
+        else:
+            spec_units = spec.get("units") or {}
+            no_unit = [c for c in feature_columns + [spec.get("target_metric")] if c and c not in spec_units]
+            if no_unit:
+                checks.append(_check("UNITS_DECLARED", SUFFICIENCY_WARN, "Units declared for every modelled field",
+                                     "No canonical unit is declared for: " + ", ".join(no_unit) +
+                                     ". Values are used as supplied and their comparability cannot be verified."))
+            else:
+                checks.append(_check("UNITS_DECLARED", SUFFICIENCY_PASS, "Units declared for every modelled field",
+                                     "A canonical unit is declared for every modelled field."))
+
+    if len(candidates) < 1:
+        checks.append(_check("CANDIDATES_PRESENT", SUFFICIENCY_FAIL, "At least one named candidate",
+                             "Add at least one customer-named candidate substitute."))
+    else:
+        incomplete = []
+        for c in candidates:
+            props = c.get("properties") or {}
+            missing = [f for f in feature_columns if f not in props]
+            if missing:
+                incomplete.append(f"{c['candidate_name']} (missing {', '.join(missing)})")
+        if incomplete:
+            checks.append(_check("CANDIDATE_INPUTS_COMPLETE", SUFFICIENCY_FAIL, "Candidate inputs complete",
+                                 "Candidates missing required inputs: " + "; ".join(incomplete) + "."))
+        else:
+            checks.append(_check("CANDIDATES_PRESENT", SUFFICIENCY_PASS, "At least one named candidate",
+                                 f"{len(candidates)} candidate(s) named."))
+            if has_dataset and experiment_rows and feature_columns:
+                ranges = compute_historical_ranges(experiment_rows, feature_columns)
+                outside = []
+                for c in candidates:
+                    cov = classify_candidate_domain_coverage(c["properties"], ranges)
+                    if cov and cov["status"] != DOMAIN_WITHIN:
+                        outside.append(c["candidate_name"])
+                if outside:
+                    checks.append(_check("CANDIDATES_OUTSIDE_RANGE", SUFFICIENCY_WARN, "Candidates inside the evidence",
+                                         "These candidates lie outside (or at the edge of) the historical range of at "
+                                         "least one feature, so their model estimates are extrapolations and will be "
+                                         "marked 'Requires validation' / 'Caution': " + ", ".join(outside) + "."))
+
+    blocking = [c for c in checks if c["status"] == SUFFICIENCY_FAIL]
+    return {
+        "can_rank": not blocking,
+        "checks": checks,
+        "blocking": blocking,
+        "warnings": [c for c in checks if c["status"] == SUFFICIENCY_WARN],
+        "summary": {"distinct_rows": len(distinct), "features": len(feature_columns), "candidates": len(candidates)},
+    }

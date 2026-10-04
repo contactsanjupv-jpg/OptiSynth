@@ -23,8 +23,24 @@ class TestSessionTokens(unittest.TestCase):
 
     def test_tampered_token_rejected(self):
         token = create_session_token(user_id=42, organization_id=7)
-        tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+        # Tamper a character in the MIDDLE of the token. (Do not tamper only the LAST
+        # character: the last base64 character of the signature carries just 4 data bits
+        # plus 2 padding bits, so swapping e.g. 'A' for 'B' changes only padding, decodes
+        # to the same signature, and is -- correctly -- still accepted. The earlier form
+        # of this test therefore failed about 1 run in 16.)
+        mid = len(token) // 2
+        tampered = token[:mid] + ("A" if token[mid] != "A" else "B") + token[mid + 1:]
         self.assertIsNone(read_session_token(tampered))
+
+    def test_tampering_is_rejected_for_many_distinct_tokens(self):
+        # 300 genuinely different tokens (different payloads => different signatures):
+        # changing any data-bearing character must always invalidate the token.
+        for user_id in range(1, 301):
+            token = create_session_token(user_id=user_id, organization_id=7)
+            self.assertIsNotNone(read_session_token(token))
+            for i in (5, len(token) // 2, len(token) - 5):
+                tampered = token[:i] + ("A" if token[i] != "A" else "B") + token[i + 1:]
+                self.assertIsNone(read_session_token(tampered), msg=f"user {user_id}, index {i}")
 
     def test_garbage_token_rejected(self):
         self.assertIsNone(read_session_token("not-a-real-token"))

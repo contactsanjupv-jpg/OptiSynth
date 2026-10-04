@@ -7,14 +7,13 @@ fully separable. Same security discipline as the original:
 - Never trusts the uploaded filename for storage.
 - Stored under UPLOAD_ROOT, org-scoped path from a server-derived
   organization_id only.
-- stdlib csv module only.
+- CSV via the stdlib csv module; XLSX / DOCX / PDF only through
+  evidence_extraction (read-only parsing of values, no macros, no network).
 - Row-count and byte-size caps enforced before real work.
 - Every value coerced with float() inside try/except -- a malformed
   cell is a per-row error, never a crash or a silent zero.
 """
 
-import csv
-import io
 import json
 import os
 import secrets
@@ -22,7 +21,7 @@ import secrets
 from backend.app.config.settings import settings
 from backend.app.repositories import qualification_dataset_repo
 from backend.app.schemas.errors import ValidationError
-from backend.app.services import change_case_rules, evidence_rules
+from backend.app.services import change_case_rules, evidence_extraction, evidence_rules
 
 UPLOAD_ROOT = os.path.join(
     os.path.dirname(__file__),
@@ -43,42 +42,23 @@ def _upload_dir_for_org(organization_id: int) -> str:
     return path
 
 
-def _read_csv(qualification_spec: dict, filename: str, file_bytes: bytes):
-    """Shared by preview and ingest: the size/encoding/shape checks that
-    existed before B2/B3, unchanged. -> (headers, data_rows)."""
-    feature_columns = qualification_spec.get("feature_columns")
-    target_metric = qualification_spec.get("target_metric")
-    if not feature_columns or not target_metric:
+def _check_spec_and_file(qualification_spec: dict, filename: str, file_bytes: bytes) -> str:
+    """The size / shape checks that run before any real work. Returns the
+    file kind (csv / xlsx / docx / pdf)."""
+    if not qualification_spec.get("feature_columns") or not qualification_spec.get("target_metric"):
         raise ValidationError(
             "This change case's qualification_spec must define 'feature_columns' "
             "and 'target_metric' before a dataset can be uploaded.",
             field="qualification_spec",
         )
-    if not filename.lower().endswith(".csv"):
-        raise ValidationError("Only .csv files are accepted.")
+    kind = evidence_extraction.file_kind(filename)
     if len(file_bytes) == 0:
         raise ValidationError("The uploaded file is empty.")
     if len(file_bytes) > settings.MAX_UPLOAD_BYTES:
         raise ValidationError(
             f"File is too large (max {settings.MAX_UPLOAD_BYTES // (1024 * 1024)} MB)."
         )
-    try:
-        text = file_bytes.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise ValidationError(
-            "Could not read file as UTF-8 text. Please export as a standard CSV."
-        )
-    reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
-        raise ValidationError("Could not find a header row in the CSV.")
-    headers = [h.strip() if isinstance(h, str) else h for h in reader.fieldnames]
-    reader.fieldnames = headers
-    data_rows = []
-    for raw_row in reader:
-        if len(data_rows) + 1 > settings.MAX_UPLOAD_ROWS:
-            raise ValidationError(f"Too many rows (max {settings.MAX_UPLOAD_ROWS}).")
-        data_rows.append(raw_row)
-    return headers, data_rows
+    return kind
 
 
 def _parse_options(options):
@@ -93,25 +73,67 @@ def _parse_options(options):
     return options
 
 
+def _analyze_upload(qualification_spec: dict, filename: str, file_bytes: bytes, options_raw):
+    """The single intake path for every file type: extract -> (reviewer-chosen
+    table) -> the B2/B3 evidence gate. Returns (review, rows_out, errors, kind).
+    Nothing here stores anything."""
+    kind = _check_spec_and_file(qualification_spec, filename, file_bytes)
+    options = _parse_options(options_raw)
+    selection = evidence_extraction.load_selection(
+        filename, file_bytes, options if isinstance(options, dict) else {},
+    )
+    if selection["headers"] is None:
+        # Could not resolve which table to use without guessing: a review of
+        # findings only, no rows.
+        return evidence_rules.blocked_review(selection["flags"]), [], [], kind
+    review, rows_out, errors = evidence_rules.analyze_rows(
+        qualification_spec, selection["headers"], selection["data_rows"], options,
+        row_refs=selection["row_refs"],
+    )
+    review["flags"] = selection["flags"] + review["flags"]
+    review["source"] = selection["source"]
+    return review, rows_out, errors, kind
+
+
+def extract_evidence_tables(qualification_spec: dict, filename: str, file_bytes: bytes) -> dict:
+    """Step 1 of the review screen: what tables does this file contain, where
+    are they, and how well does each one's first row resemble the columns this
+    case needs? Display-only -- nothing is selected, mapped or stored."""
+    _check_spec_and_file(qualification_spec, filename, file_bytes)
+    listing = evidence_extraction.list_tables(filename, file_bytes)
+    spec_units = qualification_spec.get("units") or {}
+    required = list(qualification_spec["feature_columns"]) + [qualification_spec["target_metric"]]
+    return {
+        "file_name": filename,
+        "file_kind": listing["kind"],
+        "file_sha256": evidence_rules.file_sha256(file_bytes),
+        "warnings": listing["warnings"],
+        "required_columns": [
+            {"name": c, "role": "target" if c == qualification_spec["target_metric"] else "feature",
+             "unit": spec_units.get(c)}
+            for c in required
+        ],
+        "tables": [evidence_extraction.table_summary(t, required) for t in listing["tables"]],
+    }
+
+
 def preview_qualification_csv(
     qualification_spec: dict,
     filename: str,
     file_bytes: bytes,
     options=None,
 ) -> dict:
-    """Runs the full evidence-intake review (column mapping, units, test
-    conditions, conflicts, data quality) WITHOUT storing anything, and
-    returns the review: proposed mappings, every flag, and whether the file
-    would be accepted as-is. Persists nothing."""
-    headers, data_rows = _read_csv(qualification_spec, filename, file_bytes)
-    review, rows_out, errors = evidence_rules.analyze_rows(
-        qualification_spec, headers, data_rows, _parse_options(options),
-    )
+    """Runs the full evidence-intake review (table selection, column mapping,
+    units, test conditions, conflicts, data quality) WITHOUT storing
+    anything, and returns the review: proposed mappings, every flag, and
+    whether the file would be accepted as-is. Works for every supported file
+    type despite the historical function name."""
+    review, rows_out, errors, _ = _analyze_upload(qualification_spec, filename, file_bytes, options)
     blocking = evidence_rules.blocking_flags(review["flags"])
     result = {
         "would_be_accepted": not blocking and bool(rows_out),
         "file_sha256": evidence_rules.file_sha256(file_bytes),
-        "headers": headers,
+        "headers": [m["source_header"] for m in review.get("column_mapping", {}).values()],
         "review": review,
         "errors": errors[:20],
     }
@@ -137,21 +159,18 @@ def ingest_qualification_csv(
     options=None,
 ) -> dict:
     """qualification_spec must contain 'feature_columns' (list[str]) and
-    'target_metric' (str) -- these define which CSV columns are the
-    candidate-scoring features and which is the historical qualification
-    outcome value. Set when the change case is created.
+    'target_metric' (str). Despite the historical name this stores evidence
+    from any supported file (.csv / .xlsx / .docx / .pdf).
 
-    B2/B3: the file first passes evidence_rules.analyze_rows. Any blocking
-    flag (unconfirmed/ambiguous column mapping, missing/mixed/incompatible
-    units, differing test conditions, conflicting observations, ambiguous
-    numbers) REFUSES the upload: nothing is stored and nothing reaches the
-    model. What is stored is only the canonical, validated rows plus the
-    review record that explains every decision."""
+    The file first passes the evidence gate. Any blocking flag (no / ambiguous
+    table, unconfirmed or ambiguous column mapping, missing / mixed /
+    incompatible units, differing test conditions, conflicting observations,
+    ambiguous numbers) REFUSES the upload: nothing is stored and nothing
+    reaches the model. What is stored is only the canonical, validated rows
+    (each with its source reference), the review record that explains every
+    decision, and the original file under a server-generated name."""
     feature_columns = qualification_spec.get("feature_columns")
-    headers, data_rows = _read_csv(qualification_spec, filename, file_bytes)
-    review, rows_out, errors = evidence_rules.analyze_rows(
-        qualification_spec, headers, data_rows, _parse_options(options),
-    )
+    review, rows_out, errors, kind = _analyze_upload(qualification_spec, filename, file_bytes, options)
     if evidence_rules.blocking_flags(review["flags"]):
         raise ValidationError(evidence_rules.summarize_blocking(review["flags"]), field="dataset")
     # Priority 4: data-quality calculations (shared with the ranking/report
@@ -164,7 +183,7 @@ def ingest_qualification_csv(
             "No valid numeric rows found in the uploaded file."
         )
     review["file_sha256"] = evidence_rules.file_sha256(file_bytes)
-    stored_filename = f"{secrets.token_hex(16)}.csv"
+    stored_filename = f"{secrets.token_hex(16)}.{kind}"
     dest_path = os.path.join(
         _upload_dir_for_org(organization_id),
         stored_filename,
@@ -202,3 +221,25 @@ def ingest_qualification_csv(
         "review": review,
         "warnings": [f for f in review["flags"] if f["severity"] == evidence_rules.WARNING],
     }
+
+
+def list_dataset_summaries(organization_id: int, change_case_id: int) -> list:
+    """The evidence inventory: every upload for a change case with its source
+    file, hash, tables used and review counts. The LATEST one is what ranking
+    uses."""
+    out = []
+    for i, d in enumerate(qualification_dataset_repo.list_datasets_for_change_case(organization_id, change_case_id)):
+        review = json.loads(d["review_json"]) if d.get("review_json") else None
+        out.append({
+            "id": d["id"],
+            "original_filename": d["original_filename"],
+            "uploaded_at": d["created_at"],
+            "row_count": d["row_count"],
+            "is_current": i == 0,  # list is newest-first
+            "has_review_record": review is not None,
+            "file_sha256": (review or {}).get("file_sha256"),
+            "source": (review or {}).get("source"),
+            "counts": (review or {}).get("counts"),
+            "warning_count": len([f for f in (review or {}).get("flags", []) if f.get("severity") == "warning"]),
+        })
+    return out
