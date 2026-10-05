@@ -133,12 +133,13 @@ def add_candidate(organization_id: int, change_case_id: int, name: str, features
     return candidate_repo.get_candidate(organization_id, candidate_id)
 
 
-def _assess_sufficiency(spec: dict, dataset, experiments: list, candidates: list) -> dict:
+def _assess_sufficiency(spec: dict, dataset, experiments: list, candidates: list, ranking_status: dict = None) -> dict:
     rows = [{"features": json.loads(e["features_json"]), "target_value": e["target_value"]} for e in experiments]
     cands = [{"candidate_name": c["candidate_name"], "properties": json.loads(c["properties_json"])} for c in candidates]
     review = json.loads(dataset["review_json"]) if dataset and dataset.get("review_json") else None
     return change_case_rules.assess_evidence_sufficiency(
         spec, rows, cands, has_dataset=dataset is not None, dataset_review=review,
+        ranking_status=ranking_status,
     )
 
 
@@ -152,7 +153,24 @@ def get_evidence_sufficiency(organization_id: int, change_case_id: int) -> dict:
         qualification_dataset_repo.list_experiments_for_dataset(organization_id, dataset["id"]) if dataset else []
     )
     candidates = candidate_repo.list_candidates_for_change_case(organization_id, change_case_id)
-    return _assess_sufficiency(spec, dataset, experiments, candidates)
+    # Are the rankings on screen based on the current evidence? (informational only)
+    stale, has_predictions, filenames = [], False, {}
+    for c in candidates:
+        pred = candidate_repo.get_latest_prediction_for_candidate(organization_id, c["id"])
+        if pred is None:
+            continue
+        has_predictions = True
+        if dataset is not None and pred["dataset_version_id"] != dataset["id"]:
+            if pred["dataset_version_id"] not in filenames:
+                old = qualification_dataset_repo.get_dataset_for_change_case(
+                    organization_id, change_case_id, pred["dataset_version_id"])
+                filenames[pred["dataset_version_id"]] = old["original_filename"] if old else "an earlier dataset"
+            stale.append({"candidate_name": c["candidate_name"], "from_filename": filenames[pred["dataset_version_id"]]})
+    ranking_status = {
+        "stale": stale, "has_predictions": has_predictions,
+        "current_filename": dataset["original_filename"] if dataset else None,
+    }
+    return _assess_sufficiency(spec, dataset, experiments, candidates, ranking_status)
 
 
 def _historical_ranges(spec: dict, experiments: list):
@@ -164,19 +182,44 @@ def _historical_ranges(spec: dict, experiments: list):
     return change_case_rules.compute_historical_ranges(rows, spec["feature_columns"])
 
 
+def _dataset_ref(dataset):
+    return {"id": dataset["id"], "original_filename": dataset["original_filename"]} if dataset else None
+
+
 def list_candidates_with_predictions(organization_id: int, change_case_id: int) -> list:
     candidates = candidate_repo.list_candidates_for_change_case(organization_id, change_case_id)
     spec = None
     ranges_by_dataset = {}
+    # Stale-ranking marker: a prediction is STALE when the dataset it was generated from
+    # is no longer the current (newest) dataset. Display-only: nothing below changes which
+    # dataset anything is computed from.
+    latest_dataset = qualification_dataset_repo.get_latest_dataset_for_change_case(organization_id, change_case_id)
+    dataset_refs = {}
     for c in candidates:
         c["properties"] = json.loads(c["properties_json"])
         c["input_record"] = json.loads(c["input_json"]) if c.get("input_json") else None
         c["latest_prediction"] = candidate_repo.get_latest_prediction_for_candidate(organization_id, c["id"])
         c["domain_coverage"] = None
         c["decision_support"] = None  # C1: None until a prediction exists
+        c["prediction_stale"] = None  # None until a prediction exists
+        c["prediction_dataset"] = None
+        c["current_dataset"] = _dataset_ref(latest_dataset)
+        c["stale_notice"] = None
         pred = c["latest_prediction"]
         if pred is None:
             continue
+        if pred["dataset_version_id"] not in dataset_refs:
+            dataset_refs[pred["dataset_version_id"]] = _dataset_ref(
+                qualification_dataset_repo.get_dataset_for_change_case(
+                    organization_id, change_case_id, pred["dataset_version_id"])
+            )
+        c["prediction_dataset"] = dataset_refs[pred["dataset_version_id"]]
+        c["prediction_stale"] = latest_dataset is not None and pred["dataset_version_id"] != latest_dataset["id"]
+        if c["prediction_stale"]:
+            c["stale_notice"] = change_case_rules.stale_ranking_notice(
+                (c["prediction_dataset"] or {}).get("original_filename", "an earlier dataset"),
+                latest_dataset["original_filename"],
+            )
         # Domain coverage is judged against the dataset THIS prediction was
         # generated from (dataset_version_id) -- never the latest upload --
         # so a later, wider dataset can't quietly turn an extrapolation into
@@ -544,6 +587,7 @@ def _build_report_audit_context(organization_id: int, change_case_id: int, case:
         "spec": spec,
         "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
         "dataset": dataset,
+        "stale_notice": next((c["stale_notice"] for c in candidates if c.get("stale_notice")), None),
         "ingestion_review": (
             json.loads(dataset["review_json"]) if dataset and dataset.get("review_json") else None
         ),

@@ -86,6 +86,12 @@ class CandidateResponse(BaseModel):
     candidate_name: str
     properties: dict
     input_record: dict | None = None
+    # Stale-ranking marker: True when latest_prediction came from an older dataset than the
+    # current evidence; None until the candidate has a prediction.
+    prediction_stale: bool | None = None
+    prediction_dataset: dict | None = None
+    current_dataset: dict | None = None
+    stale_notice: str | None = None
     latest_prediction: PredictionResponse | None = None
     # Heuristic historical-range coverage, judged against the dataset the
     # latest prediction was generated from. None if not yet ranked.

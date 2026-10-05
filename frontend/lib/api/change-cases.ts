@@ -185,6 +185,10 @@ export interface EvidenceInventoryItem {
   uploaded_at: string;
   row_count: number;
   is_current: boolean;
+  /** "current" = the newest upload (used by the next ranking); "superseded" = earlier evidence kept as history. */
+  status: "current" | "superseded";
+  /** true when the rankings currently shown were generated from this dataset. */
+  used_by_displayed_rankings: boolean;
   has_review_record: boolean;
   file_sha256: string | null;
   source: { file: string; kind: string; tables: { ref: string; location: string; header_row: number; data_rows: number }[] } | null;
@@ -258,6 +262,17 @@ export interface Candidate {
   properties: Record<string, number>;
   /** What was entered (value + unit) and what it became in the case's canonical units. */
   input_record?: Record<string, { value: number; unit: string | null; converted_value?: number; converted_unit?: string }> | null;
+  /**
+   * Stale-ranking marker. true = this prediction was generated from an OLDER dataset than the
+   * current evidence; false = generated from the current evidence; null = no prediction yet.
+   */
+  prediction_stale?: boolean | null;
+  /** The dataset this candidate's prediction was generated from. */
+  prediction_dataset?: { id: number; original_filename: string } | null;
+  /** The current (newest) evidence. */
+  current_dataset?: { id: number; original_filename: string } | null;
+  /** Ready-to-show sentence when prediction_stale is true. */
+  stale_notice?: string | null;
   latest_prediction: Prediction | null;
   /** null until the candidate has been ranked. */
   domain_coverage: DomainCoverage | null;

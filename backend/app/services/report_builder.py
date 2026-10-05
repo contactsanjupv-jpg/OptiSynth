@@ -133,6 +133,11 @@ def _add_requirement_and_record(doc, ctx):
     produced this report, so the document is traceable without the software."""
     spec = ctx["spec"]
     doc.add_heading("Requirement and analysis record", level=1)
+    if ctx.get("stale_notice"):
+        p = doc.add_paragraph()
+        run = p.add_run("NOTICE -- NEWER EVIDENCE EXISTS. ")
+        run.bold = True
+        p.add_run(ctx["stale_notice"] + " Regenerate this report after re-running the ranking.")
     phrase = DIRECTION_PHRASE.get(spec.get("direction"), spec.get("direction", ""))
     doc.add_paragraph(
         f"Requirement analysed: {spec['target_metric']} {phrase} {spec['target_value']}. "

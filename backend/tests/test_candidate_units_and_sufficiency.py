@@ -162,5 +162,80 @@ class TestCandidateApi(IsolatedApiTestCase):
         self.assertEqual(missing.status_code, 400)
 
 
+class TestUnitsWordingSourceVersusCase(unittest.TestCase):
+    """'The case defines no canonical unit' and 'the imported file's units were recorded at
+    intake' are different facts and must never read as a contradiction."""
+
+    REVIEW = {"flags": [], "units": {
+        "crosslinker_ratio": {"canonical": None, "declared_source_unit": None, "source_units_seen": []},
+        "cure_temp_c": {"canonical": "c", "declared_source_unit": "C", "source_units_seen": ["c"]},
+        "salt_spray_hours": {"canonical": "h", "declared_source_unit": "h", "source_units_seen": ["h"]},
+    }}
+
+    def _units_check(self, spec, review):
+        a = R.assess_evidence_sufficiency(spec, rows(12), [cand("A")], True, review)
+        return next(c for c in a["checks"] if c["code"] == "UNITS_DECLARED")
+
+    def test_case_without_units_but_with_intake_units_says_both_things_distinctly(self):
+        chk = self._units_check(SPEC, self.REVIEW)
+        self.assertEqual(chk["status"], "warn")
+        self.assertEqual(chk["title"], "Case units not defined for every modelled field")
+        self.assertIn("The case defines no canonical unit for: crosslinker_ratio, cure_temp_c, salt_spray_hours.", chk["detail"])
+        self.assertIn("Units recorded at intake for the imported file (cure_temp_c = C; salt_spray_hours = h)", chk["detail"])
+        self.assertIn("not enforced by the case", chk["detail"])
+        self.assertIn("candidate inputs are not unit-checked or converted", chk["detail"])
+
+    def test_no_intake_units_means_no_intake_sentence(self):
+        review = {"flags": [], "units": {c: {"canonical": None, "declared_source_unit": None, "source_units_seen": []}
+                                         for c in ("crosslinker_ratio", "cure_temp_c", "salt_spray_hours")}}
+        chk = self._units_check(SPEC, review)
+        self.assertNotIn("Units recorded at intake", chk["detail"])
+        self.assertIn("The case defines no canonical unit", chk["detail"])
+
+    def test_warning_and_pass_titles_differ_and_neither_claims_units_are_declared(self):
+        full = {**SPEC, "units": {"crosslinker_ratio": "1", "cure_temp_c": "degC", "salt_spray_hours": "h"}}
+        warn, ok = self._units_check(SPEC, self.REVIEW), self._units_check(full, self.REVIEW)
+        self.assertEqual(ok["status"], "pass")
+        self.assertEqual(ok["title"], "Case units defined for every modelled field")
+        self.assertNotEqual(warn["title"], ok["title"])
+        for chk in (warn, ok):
+            self.assertNotIn("Units declared", chk["title"])
+            self.assertNotIn("Units declared", chk["detail"])
+
+
+class TestRankingCurrencyCheck(unittest.TestCase):
+    """PREDICTIONS_CURRENT: informational, never blocking."""
+
+    def _assess(self, ranking_status):
+        return R.assess_evidence_sufficiency(SPEC, rows(12), [cand("A")], True, {"flags": []}, ranking_status=ranking_status)
+
+    def _chk(self, a):
+        return next((c for c in a["checks"] if c["code"] == "PREDICTIONS_CURRENT"), None)
+
+    def test_notice_wording_is_exact(self):
+        self.assertEqual(
+            R.stale_ranking_notice("old.csv", "new.xlsx"),
+            "This ranking was generated from old.csv. Current evidence is new.xlsx. Re-run ranking to use the current evidence.",
+        )
+
+    def test_stale_rankings_warn_with_the_notice_and_do_not_block(self):
+        a = self._assess({"stale": [{"candidate_name": "A", "from_filename": "old.csv"}, {"candidate_name": "B", "from_filename": "old.csv"}],
+                          "has_predictions": True, "current_filename": "new.xlsx"})
+        chk = self._chk(a)
+        self.assertEqual(chk["status"], "warn")
+        self.assertIn("Rankings for A, B are stale.", chk["detail"])
+        self.assertIn(R.stale_ranking_notice("old.csv", "new.xlsx"), chk["detail"])
+        self.assertTrue(a["can_rank"])
+
+    def test_current_rankings_pass(self):
+        chk = self._chk(self._assess({"stale": [], "has_predictions": True, "current_filename": "new.xlsx"}))
+        self.assertEqual(chk["status"], "pass")
+
+    def test_no_rankings_yet_adds_no_check_and_omitting_the_argument_changes_nothing(self):
+        self.assertIsNone(self._chk(self._assess({"stale": [], "has_predictions": False, "current_filename": "new.xlsx"})))
+        self.assertIsNone(self._chk(self._assess(None)))
+        self.assertIsNone(self._chk(R.assess_evidence_sufficiency(SPEC, rows(12), [cand("A")], True, {"flags": []})))
+
+
 if __name__ == "__main__":
     unittest.main()

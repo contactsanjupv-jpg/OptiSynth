@@ -19,7 +19,7 @@ import os
 import secrets
 
 from backend.app.config.settings import settings
-from backend.app.repositories import qualification_dataset_repo
+from backend.app.repositories import candidate_repo, qualification_dataset_repo
 from backend.app.schemas.errors import ValidationError
 from backend.app.services import change_case_rules, evidence_extraction, evidence_rules
 
@@ -227,6 +227,12 @@ def list_dataset_summaries(organization_id: int, change_case_id: int) -> list:
     """The evidence inventory: every upload for a change case with its source
     file, hash, tables used and review counts. The LATEST one is what ranking
     uses."""
+    # Which datasets are the rankings currently on screen based on? (read-only lookup)
+    behind_rankings = set()
+    for c in candidate_repo.list_candidates_for_change_case(organization_id, change_case_id):
+        pred = candidate_repo.get_latest_prediction_for_candidate(organization_id, c["id"])
+        if pred is not None:
+            behind_rankings.add(pred["dataset_version_id"])
     out = []
     for i, d in enumerate(qualification_dataset_repo.list_datasets_for_change_case(organization_id, change_case_id)):
         review = json.loads(d["review_json"]) if d.get("review_json") else None
@@ -236,6 +242,10 @@ def list_dataset_summaries(organization_id: int, change_case_id: int) -> list:
             "uploaded_at": d["created_at"],
             "row_count": d["row_count"],
             "is_current": i == 0,  # list is newest-first
+            # Unambiguous labels: the newest upload is the CURRENT evidence (what the next ranking
+            # uses); every earlier upload is PREVIOUS / SUPERSEDED, kept as history.
+            "status": "current" if i == 0 else "superseded",
+            "used_by_displayed_rankings": d["id"] in behind_rankings,
             "has_review_record": review is not None,
             "file_sha256": (review or {}).get("file_sha256"),
             "source": (review or {}).get("source"),

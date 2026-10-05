@@ -85,6 +85,11 @@ export default function ChangeCaseDetailPage() {
 
   if (checking) return null;
 
+  // One banner per distinct stale notice (normally exactly one), shown above the candidate list.
+  const staleNotices = Array.from(
+    new Set((candidates ?? []).map((c) => c.stale_notice).filter((n): n is string => !!n)),
+  );
+
   async function handleAddCandidate(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -196,7 +201,12 @@ export default function ChangeCaseDetailPage() {
             <div key={ev.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--color-border)", fontSize: "var(--text-xs)" }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <strong style={{ fontSize: "var(--text-sm)" }}>{ev.original_filename}</strong>
-                {ev.is_current && <Badge tone="accent">used for analysis</Badge>}
+                {ev.status === "current"
+                  ? <Badge tone="accent">Current evidence</Badge>
+                  : <Badge tone="neutral">Previous / superseded evidence</Badge>}
+                {ev.status !== "current" && ev.used_by_displayed_rankings && (
+                  <Badge tone="warning">rankings below still use this</Badge>
+                )}
                 {!ev.has_review_record && <Badge tone="warning">no review record</Badge>}
               </div>
               <div style={{ color: "var(--color-text-tertiary)" }}>
@@ -248,6 +258,14 @@ export default function ChangeCaseDetailPage() {
           {candidates && candidates.length === 0 && (
             <p style={{ fontSize: "var(--text-sm)", color: "var(--color-text-tertiary)" }}>No candidates yet.</p>
           )}
+          {staleNotices.map((n) => (
+            <div key={n} role="alert" style={{
+              margin: "8px 0", padding: "10px 12px", border: "1px solid #f59e0b", background: "#fffbeb",
+              borderRadius: "var(--radius-sm)", fontSize: "var(--text-xs)", color: "#78350f",
+            }}>
+              <strong>Stale ranking.</strong> {n}
+            </div>
+          ))}
           {candidates && candidates.map((c) => (
             <div key={c.id} style={{ padding: "10px 0", borderBottom: "1px solid var(--color-border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -265,7 +283,8 @@ export default function ChangeCaseDetailPage() {
                   )}
                 </div>
                 {c.latest_prediction && (
-                  <div style={{ textAlign: "right" }}>
+                  <div style={{ textAlign: "right", opacity: c.prediction_stale ? 0.7 : 1 }}>
+                    {c.prediction_stale && <div style={{ marginBottom: 4 }}><Badge tone="danger">STALE</Badge></div>}
                     <Badge tone={decisionTone(c.decision_support)}>
                       Model estimate {Math.round(c.latest_prediction.predicted_probability * 100)}%
                     </Badge>
@@ -278,11 +297,11 @@ export default function ChangeCaseDetailPage() {
               {c.latest_prediction && (
                 <div style={{ marginTop: 8, fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>
                   <div>
-                    Historical domain:{" "}
+                    Historical domain{c.prediction_stale ? " (previous evidence)" : ""}:{" "}
                     {c.domain_coverage ? DOMAIN_STATUS_LABEL[c.domain_coverage.status] : "Not determined"}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
-                    <span>Decision support:</span>
+                    <span>Decision support{c.prediction_stale ? " (previous evidence)" : ""}:</span>
                     <Badge tone={decisionTone(c.decision_support)}>
                       {c.decision_support?.label ?? "Requires validation"}
                     </Badge>
@@ -348,7 +367,7 @@ export default function ChangeCaseDetailPage() {
           <div style={{ marginTop: 16 }}>
             <Button variant="primary" onClick={handleRank} loading={ranking}
               disabled={!candidates || candidates.length === 0 || (sufficiency !== null && !sufficiency.can_rank)}>
-              Run ranking
+              {(candidates ?? []).some((c) => c.prediction_stale) ? "Re-run ranking" : "Run ranking"}
             </Button>
           </div>
         </Card>

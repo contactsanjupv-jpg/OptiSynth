@@ -560,8 +560,47 @@ def _check(code, status, title, detail):
     return {"code": code, "status": status, "title": title, "detail": detail}
 
 
+def stale_ranking_notice(old_filename: str, current_filename: str) -> str:
+    """The ONE wording shown (page, evidence screen, report) when a ranking was
+    generated from an earlier dataset than the current evidence."""
+    return (
+        f"This ranking was generated from {old_filename}. Current evidence is {current_filename}. "
+        "Re-run ranking to use the current evidence."
+    )
+
+
+def _source_units_text(dataset_review: dict) -> str:
+    """Units the reviewer declared / the file carried at intake, as plain text."""
+    parts = []
+    for col, info in ((dataset_review or {}).get("units") or {}).items():
+        unit = info.get("declared_source_unit") or (info.get("source_units_seen") or [None])[0]
+        if unit:
+            parts.append(f"{col} = {unit}")
+    return "; ".join(parts)
+
+
+def stale_ranking_notice(old_filename: str, current_filename: str) -> str:
+    """The ONE wording shown (page, evidence screen, report) when a ranking was
+    generated from an earlier dataset than the current evidence."""
+    return (
+        f"This ranking was generated from {old_filename}. Current evidence is {current_filename}. "
+        "Re-run ranking to use the current evidence."
+    )
+
+
+def _source_units_text(dataset_review: dict) -> str:
+    """Units the reviewer declared / the file carried at intake, as plain text."""
+    parts = []
+    for col, info in ((dataset_review or {}).get("units") or {}).items():
+        unit = info.get("declared_source_unit") or (info.get("source_units_seen") or [None])[0]
+        if unit:
+            parts.append(f"{col} = {unit}")
+    return "; ".join(parts)
+
+
 def assess_evidence_sufficiency(spec: dict, experiment_rows: list, candidates: list,
-                                has_dataset: bool, dataset_review: dict = None) -> dict:
+                                has_dataset: bool, dataset_review: dict = None,
+                                ranking_status: dict = None) -> dict:
     """experiment_rows: [{"features": {...}, "target_value": float}] of the
     CURRENT dataset. candidates: [{"candidate_name", "properties"}].
     -> {"can_rank", "checks", "blocking", "warnings", "summary"}"""
@@ -619,12 +658,26 @@ def assess_evidence_sufficiency(spec: dict, experiment_rows: list, candidates: l
             spec_units = spec.get("units") or {}
             no_unit = [c for c in feature_columns + [spec.get("target_metric")] if c and c not in spec_units]
             if no_unit:
-                checks.append(_check("UNITS_DECLARED", SUFFICIENCY_WARN, "Units declared for every modelled field",
-                                     "No canonical unit is declared for: " + ", ".join(no_unit) +
-                                     ". Values are used as supplied and their comparability cannot be verified."))
+                # Two different things, kept apart on purpose: SOURCE units (what the
+                # customer's file used, declared by the reviewer at intake) versus
+                # CASE units (the canonical unit the diagnostic itself is defined in,
+                # which is what lets candidate inputs be checked and converted).
+                source_text = _source_units_text(dataset_review)
+                detail = "The case defines no canonical unit for: " + ", ".join(no_unit) + ". "
+                if source_text:
+                    detail += (
+                        "Units recorded at intake for the imported file (" + source_text + ") describe that file only; "
+                        "they are not enforced by the case. "
+                    )
+                detail += (
+                    "Without case units, candidate inputs are not unit-checked or converted, and evidence from "
+                    "another file cannot be shown to be comparable."
+                )
+                checks.append(_check("UNITS_DECLARED", SUFFICIENCY_WARN, "Case units not defined for every modelled field",
+                                     detail))
             else:
-                checks.append(_check("UNITS_DECLARED", SUFFICIENCY_PASS, "Units declared for every modelled field",
-                                     "A canonical unit is declared for every modelled field."))
+                checks.append(_check("UNITS_DECLARED", SUFFICIENCY_PASS, "Case units defined for every modelled field",
+                                     "A canonical unit is defined in the case for every modelled field."))
 
     if len(candidates) < 1:
         checks.append(_check("CANDIDATES_PRESENT", SUFFICIENCY_FAIL, "At least one named candidate",
@@ -654,6 +707,21 @@ def assess_evidence_sufficiency(spec: dict, experiment_rows: list, candidates: l
                                          "These candidates lie outside (or at the edge of) the historical range of at "
                                          "least one feature, so their model estimates are extrapolations and will be "
                                          "marked 'Requires validation' / 'Caution': " + ", ".join(outside) + "."))
+
+    # Informational only (never blocks): are the rankings on screen based on the CURRENT evidence?
+    if ranking_status:
+        stale = ranking_status.get("stale") or []
+        if stale:
+            names = ", ".join(s["candidate_name"] for s in stale)
+            current = ranking_status.get("current_filename") or "the current evidence"
+            origins = sorted({s["from_filename"] for s in stale})
+            checks.append(_check(
+                "PREDICTIONS_CURRENT", SUFFICIENCY_WARN, "Rankings reflect the current evidence",
+                f"Rankings for {names} are stale. " + stale_ranking_notice(", ".join(origins), current),
+            ))
+        elif ranking_status.get("has_predictions"):
+            checks.append(_check("PREDICTIONS_CURRENT", SUFFICIENCY_PASS, "Rankings reflect the current evidence",
+                                 "Every ranking shown was generated from the current evidence."))
 
     blocking = [c for c in checks if c["status"] == SUFFICIENCY_FAIL]
     return {
