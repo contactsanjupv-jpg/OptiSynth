@@ -530,13 +530,21 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
             # contradictory, not additive).
             model_quality, uncertainty_calibration = _compute_evidence_metrics(spec, experiments)
 
+    rec_spec = json.loads(case["qualification_spec_json"])
     ranked_results = []
     for c in candidates:
         pred = c.get("latest_prediction")
         if pred is None:
             continue
-        experiments = candidate_repo.list_recommended_experiments_for_candidate(organization_id, c["id"])
-        description = experiments[0]["description"] if experiments else "No experiment recommended yet."
+        # The recommendation text is built from THIS candidate's latest prediction and the domain
+        # coverage shown beside it, by the same function that wrote the stored recommendation when
+        # the ranking ran -- so it can never quote a different ranking than the table it sits under.
+        # (It used to read the stored recommendations and take the OLDEST: every ranking run stores
+        # a new one with the same priority, and that listing is ordered by id ASC.)
+        description = _minimum_experiment_description(
+            {"name": c["candidate_name"], "predicted_probability": pred["predicted_probability"]},
+            rec_spec["target_value"], rec_spec["direction"], c.get("domain_coverage"),
+        )
         ranked_results.append({
             "candidate_name": c["candidate_name"],
             "predicted_probability": pred["predicted_probability"],
