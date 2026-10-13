@@ -113,29 +113,39 @@ def is_change_case_expired(expires_at: str, now: datetime = None) -> bool:
     return now > parsed
 
 
-MAX_CANDIDATES_PER_CHANGE_CASE = 5
-
-
-def check_can_add_candidate(change_case_status: str, existing_candidate_count: int) -> None:
+def check_can_add_candidate(change_case_status: str) -> None:
     """Raises ValidationError if a candidate can't be added right now.
     Candidates can only be added while a change case is still open for
     input ('draft' or 'active') -- never after it's 'completed', which is
-    a closed historical record. Also enforces the deliberate Phase 2 scope
-    limit of customer-supplied candidates: 3-5 NAMED candidates, never an
-    open-ended or generated pool -- this product does not do candidate
-    discovery/recommendation, by design."""
+    a closed historical record. There is deliberately NO cap on how many
+    customer-nominated candidates a diagnostic can hold; the product still
+    scores only candidates the customer names, never a generated pool."""
     if change_case_status not in ("draft", "active"):
         raise ValidationError(
             f"Can't add a candidate to a change case with status '{change_case_status}'.",
             field="status",
         )
 
-    if existing_candidate_count >= MAX_CANDIDATES_PER_CHANGE_CASE:
+
+def normalize_candidate_name(name: str) -> str:
+    """Comparison form of a candidate name: surrounding whitespace trimmed,
+    case ignored. Used ONLY to detect duplicate names at entry -- candidates
+    are identified everywhere else by id, never by name."""
+    return str(name).strip().casefold()
+
+
+def check_candidate_name_unique(name: str, existing_names: list) -> None:
+    """Raises ValidationError if `name` matches an existing candidate name of
+    the same diagnostic after trimming whitespace and ignoring case."""
+    wanted = normalize_candidate_name(name)
+    if not wanted:
+        raise ValidationError("A candidate needs a name.", field="name")
+    if any(normalize_candidate_name(n) == wanted for n in existing_names):
         raise ValidationError(
-            f"This change case already has {MAX_CANDIDATES_PER_CHANGE_CASE} candidates, "
-            "the maximum for this diagnostic. Remove one before adding another, or start "
-            "a new change case for additional candidates.",
-            field="candidates",
+            f"A candidate named {str(name).strip()!r} already exists in this diagnostic "
+            "(names are compared ignoring case and surrounding spaces). Use a different name so "
+            "the two candidates cannot be confused in the ranking or the report.",
+            field="name",
         )
 
 

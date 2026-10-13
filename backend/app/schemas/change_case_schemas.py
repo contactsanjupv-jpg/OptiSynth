@@ -1,8 +1,9 @@
 """
 Pydantic v2 schemas for the forced-substitution qualification diagnostic
 (change_cases domain). Scope is deliberately narrow, per the approved
-Phase 2 plan: customer-supplied candidates only (3-5), no candidate
-discovery/generation, no open-ended formulation optimization.
+Phase 2 plan: customer-supplied candidates only (no product-level cap on how
+many the customer nominates), no candidate discovery/generation, no open-ended
+formulation optimization.
 """
 from typing import Literal
 from pydantic import BaseModel, Field
@@ -72,6 +73,9 @@ class QualificationDatasetResponse(BaseModel):
 
 
 class PredictionResponse(BaseModel):
+    # The model's predicted target-property value, in the case's canonical target unit. This is a
+    # MODEL ESTIMATE, not a measured result. None means "not recorded": the prediction was stored
+    # before predicted values were persisted and is never back-filled.
     predicted_value: float | None = None
     uncertainty_std: float
     predicted_probability: float
@@ -99,6 +103,9 @@ class CandidateResponse(BaseModel):
     # C1: categorical decision support derived only from domain_coverage
     # (evidence_supported / caution / requires_validation). None until ranked.
     decision_support: dict | None = None
+    # 1 = best, by the same deterministic ordering the ranking run uses (probability, then predicted
+    # value in the favorable direction, then candidate id). None until the candidate has a prediction.
+    rank: int | None = None
 
 
 class RecommendedExperimentResponse(BaseModel):
@@ -116,8 +123,11 @@ class RankResultResponse(BaseModel):
     # renaming a name already used consistently across the service/report.
     model_config = {"protected_namespaces": ()}
 
+    rank: int
     candidate_id: int
     candidate_name: str
+    # Model-predicted target-property value in the case's canonical target unit (an estimate, not a measurement).
+    predicted_value: float | None = None
     predicted_probability: float
     uncertainty_std: float
     recommended_experiment: str

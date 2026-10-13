@@ -45,7 +45,7 @@ import json
 import numpy as np
 
 
-from engine.facade import rank_candidates as engine_rank_candidates
+from engine.facade import rank_candidates as engine_rank_candidates, ranking_sort_key
 
 
 from backend.app.repositories import (
@@ -110,8 +110,13 @@ def update_status(organization_id: int, change_case_id: int, new_status: str) ->
 
 def add_candidate(organization_id: int, change_case_id: int, name: str, features: dict, units: dict = None) -> dict:
     case = get_change_case_or_404(organization_id, change_case_id)
-    existing_count = candidate_repo.count_candidates_for_change_case(organization_id, change_case_id)
-    change_case_rules.check_can_add_candidate(case["status"], existing_count)
+    change_case_rules.check_can_add_candidate(case["status"])
+    # No product-level cap on candidates, but names must be unique within the
+    # diagnostic (trimmed, case-insensitive) so two candidates can never be
+    # confused for each other in the ranking or the report.
+    change_case_rules.check_candidate_name_unique(
+        name, [c["candidate_name"] for c in candidate_repo.list_candidates_for_change_case(organization_id, change_case_id)],
+    )
     # Priority 6 (A2): reject an incomplete candidate up front, once the case
     # has a qualification_spec with feature_columns defined -- otherwise a
     # candidate missing a required feature would silently be stored and only
@@ -239,7 +244,28 @@ def list_candidates_with_predictions(organization_id: int, change_case_id: int) 
         # provenance). If a prediction exists but coverage could not be
         # determined (ranges is None), this fails safe to requires_validation.
         c["decision_support"] = change_case_rules.derive_decision_support(c["domain_coverage"], has_prediction=True)
+    _assign_ranks(candidates, spec)
     return candidates
+
+
+def _assign_ranks(candidates: list, spec) -> None:
+    """Sets c["rank"] (1 = best) on every candidate that has a prediction, None on the rest,
+    using the SAME ordering rule as the ranking run itself (engine ranking_sort_key:
+    probability, then predicted value in the favorable direction, then candidate id), applied
+    to the STORED predictions -- so a page refresh shows exactly the order the run produced.
+    The list itself stays in candidate-id order."""
+    for c in candidates:
+        c["rank"] = None
+    ranked = [c for c in candidates if c.get("latest_prediction")]
+    if not ranked:
+        return
+    direction = (spec or {}).get("direction", "maximize")
+    ranked.sort(key=lambda c: ranking_sort_key(
+        c["latest_prediction"]["predicted_probability"], c["latest_prediction"].get("predicted_value"),
+        c["id"], direction,
+    ))
+    for position, c in enumerate(ranked, start=1):
+        c["rank"] = position
 
 
 def _check_entitled(organization_id: int) -> None:
@@ -394,28 +420,46 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
         compute_uncertainty_calibration(X, y) if "error" not in model_quality else None
     )
 
+    # Candidates cross the engine boundary with their database id. Identity is never
+    # reconstructed from names, so duplicate or look-alike names cannot attach a
+    # prediction to the wrong candidate.
     engine_candidates = [
-        {"name": c["candidate_name"], "features": json.loads(c["properties_json"])}
+        {"id": c["id"], "name": c["candidate_name"], "features": json.loads(c["properties_json"])}
         for c in candidates
     ]
 
     ranked = engine_rank_candidates(X, y, direction, feature_columns, target_value, engine_candidates)
 
-    results = []
-    name_to_id = {c["candidate_name"]: c["id"] for c in candidates}
-    for r in ranked:
-        candidate_id = name_to_id[r["name"]]
-        candidate_repo.create_prediction(
-            organization_id, candidate_id, dataset["id"], r["model_version"],
-            r["predicted_probability"], r["uncertainty_std"],
+    candidate_ids = {c["id"] for c in candidates}
+    ranked_ids = [r["id"] for r in ranked]
+    if len(ranked_ids) != len(candidate_ids) or set(ranked_ids) != candidate_ids:
+        raise RuntimeError(
+            "Ranking returned a different set of candidates than was submitted; nothing was saved."
         )
+
+    # Everything is computed first and saved afterwards, in ONE transaction
+    # (candidate_repo.persist_ranking): a failure anywhere leaves no partial ranking.
+    results = []
+    to_persist = []
+    for position, r in enumerate(ranked, start=1):
+        candidate_id = r["id"]
         domain_coverage = change_case_rules.classify_candidate_domain_coverage(r["features"], historical_ranges)
         decision_support = change_case_rules.derive_decision_support(domain_coverage, has_prediction=True)  # C1
         experiment_description = _minimum_experiment_description(r, target_value, direction, domain_coverage)
-        candidate_repo.create_recommended_experiment(organization_id, candidate_id, experiment_description, priority=1)
+        to_persist.append({
+            "candidate_id": candidate_id,
+            "model_version": r["model_version"],
+            "predicted_value": r["predicted_value"],
+            "predicted_probability": r["predicted_probability"],
+            "uncertainty_std": r["uncertainty_std"],
+            "experiment_description": experiment_description,
+            "priority": 1,
+        })
         results.append({
+            "rank": position,
             "candidate_id": candidate_id,
             "candidate_name": r["name"],
+            "predicted_value": r["predicted_value"],
             "predicted_probability": r["predicted_probability"],
             "uncertainty_std": r["uncertainty_std"],
             "recommended_experiment": experiment_description,
@@ -430,6 +474,7 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
             "uncertainty_calibration": uncertainty_calibration,
         })
 
+    candidate_repo.persist_ranking(organization_id, dataset["id"], to_persist)
     return results
 
 
@@ -546,14 +591,21 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
             rec_spec["target_value"], rec_spec["direction"], c.get("domain_coverage"),
         )
         ranked_results.append({
+            "candidate_id": c["id"],
             "candidate_name": c["candidate_name"],
+            "predicted_value": pred.get("predicted_value"),  # None = not recorded for this (older) prediction
             "predicted_probability": pred["predicted_probability"],
             "uncertainty_std": pred["uncertainty_std"],
             "recommended_experiment": description,
             "domain_coverage": c.get("domain_coverage"),
             "decision_support": c.get("decision_support"),  # C1
         })
-    ranked_results.sort(key=lambda r: r["predicted_probability"], reverse=True)
+    # Same ordering rule as the ranking run and the candidate listing (never by name).
+    ranked_results.sort(key=lambda r: ranking_sort_key(
+        r["predicted_probability"], r["predicted_value"], r["candidate_id"], rec_spec["direction"],
+    ))
+    for position, r in enumerate(ranked_results, start=1):
+        r["rank"] = position
 
     audit_context = _build_report_audit_context(
         organization_id, change_case_id, case, candidates, dataset,

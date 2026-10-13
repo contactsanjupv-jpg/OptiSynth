@@ -38,6 +38,11 @@ const DOMAIN_STATUS_LABEL: Record<DomainStatus, string> = {
   outside_historical_domain: "Outside observed range",
 };
 
+// Four significant digits, same as the report, so the screen and the DOCX show the same number.
+function formatPredictedValue(v: number): string {
+  return String(Number(v.toPrecision(4)));
+}
+
 const MODEL_ESTIMATE_NOTE =
   "Model-estimated probability is the model's output given the supplied historical data. " +
   "It is not a validated qualification probability.";
@@ -86,6 +91,14 @@ export default function ChangeCaseDetailPage() {
   if (checking) return null;
 
   // One banner per distinct stale notice (normally exactly one), shown above the candidate list.
+  // Ranked candidates first, in the server's deterministic rank order; candidates without a prediction
+  // follow in the order they were added. (The server list is in candidate-id order.)
+  const orderedCandidates = [...(candidates ?? [])].sort((a, b) => {
+    const ra = a.rank ?? Number.POSITIVE_INFINITY;
+    const rb = b.rank ?? Number.POSITIVE_INFINITY;
+    return ra !== rb ? ra - rb : a.id - b.id;
+  });
+  const targetUnit = spec?.units?.[spec.target_metric];
   const staleNotices = Array.from(
     new Set((candidates ?? []).map((c) => c.stale_notice).filter((n): n is string => !!n)),
   );
@@ -225,7 +238,7 @@ export default function ChangeCaseDetailPage() {
         </Card>
 
         <Card padding="lg" style={{ marginBottom: 20 }}>
-          <CardHeader><CardTitle>2. Candidate substitutes ({candidates?.length ?? 0}/5)</CardTitle></CardHeader>
+          <CardHeader><CardTitle>2. Candidate substitutes ({candidates?.length ?? 0})</CardTitle></CardHeader>
           <form onSubmit={handleAddCandidate} style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 16 }}>
             <div style={{ flex: 1, minWidth: 200 }}>
               <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Candidate name</label>
@@ -249,7 +262,7 @@ export default function ChangeCaseDetailPage() {
                 </div>
               </div>
             ))}
-            <Button type="submit" variant="secondary" loading={addingCandidate} disabled={!spec || (candidates?.length ?? 0) >= 5}>
+            <Button type="submit" variant="secondary" loading={addingCandidate} disabled={!spec}>
               Add candidate
             </Button>
           </form>
@@ -266,11 +279,14 @@ export default function ChangeCaseDetailPage() {
               <strong>Stale ranking.</strong> {n}
             </div>
           ))}
-          {candidates && candidates.map((c) => (
+          {candidates && orderedCandidates.map((c) => (
             <div key={c.id} style={{ padding: "10px 0", borderBottom: "1px solid var(--color-border)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
-                  <div style={{ fontSize: "var(--text-sm)", fontWeight: 500 }}>{c.candidate_name}</div>
+                  <div style={{ fontSize: "var(--text-sm)", fontWeight: 500 }}>
+                    {c.rank != null && <span style={{ color: "var(--color-text-tertiary)", marginRight: 6 }}>#{c.rank}</span>}
+                    {c.candidate_name}
+                  </div>
                   <div style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)" }}>
                     {Object.entries(c.properties).map(([k, v]) => `${k}=${v}${spec?.units?.[k] ? ` ${spec.units[k]}` : ""}`).join(", ")}
                   </div>
@@ -289,7 +305,7 @@ export default function ChangeCaseDetailPage() {
                       Model estimate {Math.round(c.latest_prediction.predicted_probability * 100)}%
                     </Badge>
                     <div style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)", marginTop: 4 }}>
-                      uncertainty (std): {c.latest_prediction.uncertainty_std.toFixed(1)}
+                      uncertainty (std): {c.latest_prediction.uncertainty_std.toFixed(1)}{targetUnit ? ` ${targetUnit}` : ""}
                     </div>
                   </div>
                 )}
@@ -297,6 +313,22 @@ export default function ChangeCaseDetailPage() {
               {c.latest_prediction && (
                 <div style={{ marginTop: 8, fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>
                   <div>
+                    <strong>Predicted {spec?.target_metric ?? "value"}{targetUnit ? ` (${targetUnit})` : ""}: </strong>
+                    {c.latest_prediction.predicted_value != null
+                      ? <>{formatPredictedValue(c.latest_prediction.predicted_value)}{targetUnit ? ` ${targetUnit}` : ""}{" "}
+                          <span style={{ color: "var(--color-text-tertiary)" }}>(model estimate, not a measured result)</span></>
+                      : <span style={{ color: "var(--color-text-tertiary)" }}>
+                          Not recorded — this ranking was saved before predicted values were stored. Re-run the ranking to get one.
+                        </span>}
+                    {spec && (
+                      <div style={{ color: "var(--color-text-tertiary)" }}>
+                        Requirement: {spec.target_metric}{targetUnit ? ` (${targetUnit})` : ""}{" "}
+                        {spec.direction === "maximize" ? "at or above" : "at or below"} {spec.target_value}
+                        {" "}· direction: {spec.direction}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ marginTop: 4 }}>
                     Historical domain{c.prediction_stale ? " (previous evidence)" : ""}:{" "}
                     {c.domain_coverage ? DOMAIN_STATUS_LABEL[c.domain_coverage.status] : "Not determined"}
                   </div>

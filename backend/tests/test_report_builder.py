@@ -9,7 +9,9 @@ import unittest
 
 from docx import Document
 
-from backend.app.services.report_builder import build_project_report, build_qualification_report
+from backend.app.services.report_builder import (
+    build_project_report, build_qualification_report, format_predicted_value,
+)
 
 
 class TestReportBuilder(unittest.TestCase):
@@ -190,3 +192,85 @@ class TestQualificationReportDecisionSupport(unittest.TestCase):
         text = self._text(path)
         self.assertNotIn("Decision support", text)
         self.assertIn("Model-estimated probability", text)
+
+
+class TestPredictedValueInTheQualificationReport(unittest.TestCase):
+    """Level 1: the ranked table carries the predicted target-property value beside the requirement,
+    direction and unit; a value that was never recorded is labelled, not blanked or invented."""
+
+    CASE = {"name": "PFHxA replacement", "trigger_type": "regulatory_restriction", "restricted_substance": "PFHxA"}
+    CTX = {
+        "change_case_id": 7, "generated_at_utc": "2026-10-13 10:00:00", "dataset": None, "stale_notice": None,
+        "ingestion_review": None, "model_versions": ["gp-rank-v1"], "ranked_at_utc": None, "candidates": [],
+        "outcomes": [],
+        "spec": {"feature_columns": ["a"], "target_metric": "salt_spray_hours", "target_value": 500.0,
+                 "direction": "maximize", "units": {"salt_spray_hours": "h"}},
+    }
+
+    def _text(self, path):
+        doc = Document(path)
+        parts = [p.text for p in doc.paragraphs]
+        for t in doc.tables:
+            for row in t.rows:
+                parts.extend(c.text for c in row.cells)
+        os.remove(path)
+        return "\n".join(parts)
+
+    def _result(self, cid, name, value, prob=0.7, rank=1):
+        return {"candidate_id": cid, "rank": rank, "candidate_name": name, "predicted_value": value,
+                "predicted_probability": prob, "uncertainty_std": 12.345,
+                "recommended_experiment": f"Run a physical qualification test for '{name}'."}
+
+    def test_value_threshold_direction_unit_and_uncertainty_are_shown(self):
+        path = build_qualification_report(self.CASE, [self._result(1, "Resin A", 523.678)], 12, "Acme",
+                                          audit_context=self.CTX)
+        text = self._text(path)
+        self.assertIn("Requirement: salt_spray_hours (h) at or above 500.0 (direction: maximize)", text)
+        self.assertIn("Predicted salt_spray_hours (h) (model estimate)", text)
+        self.assertIn("523.7", text)
+        self.assertIn("Uncertainty (std, h)", text)
+        self.assertIn("12.345", text)
+        self.assertIn("MODEL ESTIMATES, not measured physical results", text)
+
+    def test_minimize_direction_is_stated(self):
+        ctx = {**self.CTX, "spec": {**self.CTX["spec"], "direction": "minimize"}}
+        text = self._text(build_qualification_report(self.CASE, [self._result(1, "A", 10.0)], 12, "Acme",
+                                                     audit_context=ctx))
+        self.assertIn("at or below 500.0 (direction: minimize)", text)
+
+    def test_missing_value_is_labelled_not_blank_and_not_invented(self):
+        text = self._text(build_qualification_report(
+            self.CASE, [self._result(1, "Old", None, rank=2), self._result(2, "New", 410.0, prob=0.9, rank=1)],
+            12, "Acme", audit_context=self.CTX))
+        self.assertIn("Not recorded", text)
+        self.assertIn("No value has been estimated or back-filled", text)
+        self.assertIn("410", text)
+
+    def test_note_about_missing_values_only_appears_when_needed(self):
+        text = self._text(build_qualification_report(self.CASE, [self._result(1, "A", 410.0)], 12, "Acme",
+                                                     audit_context=self.CTX))
+        self.assertNotIn("Not recorded", text)
+        self.assertNotIn("back-filled", text)
+
+    def test_rank_order_note_is_present_with_ranks(self):
+        text = self._text(build_qualification_report(self.CASE, [self._result(1, "A", 410.0)], 12, "Acme",
+                                                     audit_context=self.CTX))
+        self.assertIn("then by candidate ID", text)
+
+    def test_results_without_the_new_fields_still_render_as_before(self):
+        legacy = [{"candidate_name": "Old", "predicted_probability": 0.5, "uncertainty_std": 1.0,
+                   "recommended_experiment": "Run it."}]
+        doc = Document(build_qualification_report(self.CASE, legacy, 12, "Acme"))
+        table = doc.tables[0]
+        self.assertEqual([c.text for c in table.rows[0].cells],
+                         ["Candidate", "Model-estimated probability", "Uncertainty (std)"])
+
+    def test_format_predicted_value(self):
+        self.assertEqual(format_predicted_value(523.678), "523.7")
+        self.assertEqual(format_predicted_value(12345.6), "12350")
+        self.assertEqual(format_predicted_value(100000.0), "100000")
+        self.assertEqual(format_predicted_value(0.0000123456), "0.00001235")
+        self.assertEqual(format_predicted_value(-3.14159), "-3.142")
+        self.assertEqual(format_predicted_value(0.0), "0")
+        for v in (523.678, 12345.6, 1e9, 1e-9, -77.7):
+            self.assertNotIn("e", format_predicted_value(v).lower())

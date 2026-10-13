@@ -59,21 +59,67 @@ def get_candidate(organization_id: int, candidate_id: int):
 # ---------------------------------------------------------------------------
 
 def create_prediction(organization_id: int, candidate_id: int, dataset_version_id: int,
-                       model_version: str, predicted_probability: float, uncertainty_std: float) -> int:
+                       model_version: str, predicted_probability: float, uncertainty_std: float,
+                       predicted_value: float = None) -> int:
+    """Stores ONE prediction. predicted_value is the engine's predicted target
+    property in the case's canonical unit; None means "not recorded" (it is
+    never defaulted or estimated). A ranking run must NOT call this once per
+    candidate -- use persist_ranking, which saves the whole run atomically."""
     with db_transaction() as conn:
         row = conn.execute(
             text("""INSERT INTO predictions
                      (organization_id, candidate_id, dataset_version_id, model_version,
-                      predicted_probability, uncertainty_std, created_at)
+                      predicted_probability, uncertainty_std, predicted_value, created_at)
                      VALUES (:org_id, :candidate_id, :dataset_version_id, :model_version,
-                             :predicted_probability, :uncertainty_std, :created_at)
+                             :predicted_probability, :uncertainty_std, :predicted_value, :created_at)
                      RETURNING id"""),
             {"org_id": organization_id, "candidate_id": candidate_id,
              "dataset_version_id": dataset_version_id, "model_version": model_version,
              "predicted_probability": predicted_probability, "uncertainty_std": uncertainty_std,
-             "created_at": now_iso()},
+             "predicted_value": predicted_value, "created_at": now_iso()},
         ).mappings().first()
         return row["id"]
+
+
+def persist_ranking(organization_id: int, dataset_version_id: int, rows: list) -> None:
+    """Saves an ENTIRE ranking run -- one prediction and one recommended
+    experiment per candidate -- in a single database transaction. If any insert
+    fails, nothing from the run is kept (no half-saved ranking, no candidate
+    with a prediction but no recommended experiment).
+
+    rows: [{"candidate_id", "model_version", "predicted_value",
+            "predicted_probability", "uncertainty_std",
+            "experiment_description", "priority"}]
+    Every row of one run shares one created_at, so the run is identifiable."""
+    created_at = now_iso()
+    with db_transaction() as conn:
+        for r in rows:
+            _insert_prediction(conn, organization_id, dataset_version_id, r, created_at)
+            _insert_recommended_experiment(conn, organization_id, r, created_at)
+
+
+def _insert_prediction(conn, organization_id: int, dataset_version_id: int, r: dict, created_at: str) -> None:
+    conn.execute(
+        text("""INSERT INTO predictions
+                 (organization_id, candidate_id, dataset_version_id, model_version,
+                  predicted_probability, uncertainty_std, predicted_value, created_at)
+                 VALUES (:org_id, :candidate_id, :dataset_version_id, :model_version,
+                         :predicted_probability, :uncertainty_std, :predicted_value, :created_at)"""),
+        {"org_id": organization_id, "candidate_id": r["candidate_id"],
+         "dataset_version_id": dataset_version_id, "model_version": r["model_version"],
+         "predicted_probability": r["predicted_probability"], "uncertainty_std": r["uncertainty_std"],
+         "predicted_value": r["predicted_value"], "created_at": created_at},
+    )
+
+
+def _insert_recommended_experiment(conn, organization_id: int, r: dict, created_at: str) -> None:
+    conn.execute(
+        text("""INSERT INTO recommended_experiments
+                 (organization_id, candidate_id, description, priority, created_at)
+                 VALUES (:org_id, :candidate_id, :description, :priority, :created_at)"""),
+        {"org_id": organization_id, "candidate_id": r["candidate_id"],
+         "description": r["experiment_description"], "priority": r["priority"], "created_at": created_at},
+    )
 
 
 def get_latest_prediction_for_candidate(organization_id: int, candidate_id: int):

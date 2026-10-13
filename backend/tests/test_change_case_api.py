@@ -1001,79 +1001,37 @@ class TestChangeCaseApi(unittest.TestCase):
 
     # -----------------------------------------------------------------
 
-    # Scope limits (3-5 candidates, no candidate discovery)
+    # Scope limits (no candidate cap, unique names, no candidate discovery)
 
     # -----------------------------------------------------------------
 
 
 
-    def test_candidate_limit_enforced(self):
-
+    def test_more_than_five_candidates_can_be_added(self):
+        # Level 1: the old five-candidate product cap is removed.
         client = self.client_factory()
-
-        self._signup(
-
-            client,
-
-            "limit@coatings.com",
-
-            "Limit Coatings",
-
-        )
-
+        self._signup(client, "nolimit@coatings.com", "Nolimit Coatings")
         case_id = self._create_change_case(client).json()["id"]
-
-
-
-        for i in range(5):
-
+        for i in range(8):
             r = client.post(
-
                 f"/api/change-cases/{case_id}/candidates",
-
-                json={
-
-                    "name": f"Candidate {i}",
-
-                    "features": {
-
-                        "viscosity": 460,
-
-                        "solids_pct": 61,
-
-                    },
-
-                },
-
+                json={"name": f"Candidate {i}", "features": {"viscosity": 460, "solids_pct": 61}},
             )
+            self.assertEqual(r.status_code, 201, r.text)
+        listed = client.get(f"/api/change-cases/{case_id}/candidates").json()
+        self.assertEqual(len(listed), 8)
 
-            self.assertEqual(r.status_code, 201)
-
-
-
-        r = client.post(
-
-            f"/api/change-cases/{case_id}/candidates",
-
-            json={
-
-                "name": "One too many",
-
-                "features": {
-
-                    "viscosity": 460,
-
-                    "solids_pct": 61,
-
-                },
-
-            },
-
-        )
-
-        self.assertEqual(r.status_code, 400)
-
-
+    def test_duplicate_candidate_name_is_rejected(self):
+        client = self.client_factory()
+        self._signup(client, "dupname@coatings.com", "Dupname Coatings")
+        case_id = self._create_change_case(client).json()["id"]
+        body = {"name": "Resin A", "features": {"viscosity": 460, "solids_pct": 61}}
+        self.assertEqual(client.post(f"/api/change-cases/{case_id}/candidates", json=body).status_code, 201)
+        for variant in ("Resin A", "resin a", "  RESIN A  "):
+            r = client.post(f"/api/change-cases/{case_id}/candidates", json={**body, "name": variant})
+            self.assertEqual(r.status_code, 400, variant)
+            self.assertIn("already exists", r.json()["error"])
+        self.assertEqual(len(client.get(f"/api/change-cases/{case_id}/candidates").json()), 1)
 
     # -----------------------------------------------------------------
 

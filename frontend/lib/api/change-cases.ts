@@ -220,6 +220,11 @@ export function getSufficiency(changeCaseId: number) {
 }
 
 export interface Prediction {
+  /**
+   * The model's predicted target-property value in the case's canonical target unit. A MODEL
+   * ESTIMATE, not a measured result. null = not recorded: the prediction was stored before values
+   * were saved and is never back-filled (re-run the ranking to obtain one).
+   */
   predicted_value: number | null;
   uncertainty_std: number;
   predicted_probability: number;
@@ -278,6 +283,8 @@ export interface Candidate {
   domain_coverage: DomainCoverage | null;
   /** null until the candidate has been ranked. */
   decision_support: DecisionSupport | null;
+  /** 1 = best, by the same deterministic order the ranking run used. null until the candidate has a prediction. */
+  rank?: number | null;
 }
 
 export function addCandidate(

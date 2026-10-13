@@ -7,12 +7,13 @@ from datetime import datetime, timedelta, timezone
 import backend.app.services.change_case_rules as change_case_rules
 from backend.app.services.change_case_rules import (
     MIN_HISTORICAL_ROWS_FOR_PREDICTION,
-    MAX_CANDIDATES_PER_CHANGE_CASE,
     check_sufficient_data_for_prediction,
     check_status_transition_allowed,
     check_outcome_not_already_recorded,
     check_entitled_for_diagnostic,
     check_can_add_candidate,
+    check_candidate_name_unique,
+    normalize_candidate_name,
     check_can_trigger_ranking,
     is_change_case_expired,
 )
@@ -118,23 +119,61 @@ class TestExpiryRule(unittest.TestCase):
 
 class TestCanAddCandidateRule(unittest.TestCase):
     def test_allows_adding_to_draft(self):
-        check_can_add_candidate("draft", existing_candidate_count=0)
+        check_can_add_candidate("draft")
 
     def test_allows_adding_to_active(self):
-        check_can_add_candidate("active", existing_candidate_count=2)
+        check_can_add_candidate("active")
 
     def test_blocks_adding_to_completed(self):
         with self.assertRaises(ValidationError) as ctx:
-            check_can_add_candidate("completed", existing_candidate_count=1)
+            check_can_add_candidate("completed")
         self.assertEqual(ctx.exception.field, "status")
 
-    def test_blocks_at_max_candidates(self):
-        with self.assertRaises(ValidationError) as ctx:
-            check_can_add_candidate("draft", existing_candidate_count=MAX_CANDIDATES_PER_CHANGE_CASE)
-        self.assertEqual(ctx.exception.field, "candidates")
+    def test_there_is_no_candidate_count_cap(self):
+        # Level 1: the product-level five-candidate cap is gone. The rule no longer even
+        # receives a count, and the old constant no longer exists.
+        self.assertFalse(hasattr(change_case_rules, "MAX_CANDIDATES_PER_CHANGE_CASE"))
+        with self.assertRaises(TypeError):
+            check_can_add_candidate("draft", existing_candidate_count=1000)
 
-    def test_allows_one_below_max(self):
-        check_can_add_candidate("draft", existing_candidate_count=MAX_CANDIDATES_PER_CHANGE_CASE - 1)
+
+class TestCandidateNameUniquenessRule(unittest.TestCase):
+    def test_new_name_is_allowed(self):
+        check_candidate_name_unique("EcoShield SF-100", ["Resin A", "Resin B"])
+
+    def test_first_candidate_is_allowed(self):
+        check_candidate_name_unique("Resin A", [])
+
+    def test_exact_duplicate_is_rejected(self):
+        with self.assertRaises(ValidationError) as ctx:
+            check_candidate_name_unique("Resin A", ["Resin A"])
+        self.assertEqual(ctx.exception.field, "name")
+        self.assertIn("already exists", ctx.exception.message)
+
+    def test_case_difference_is_still_a_duplicate(self):
+        with self.assertRaises(ValidationError):
+            check_candidate_name_unique("resin a", ["Resin A"])
+        with self.assertRaises(ValidationError):
+            check_candidate_name_unique("RESIN A", ["Resin A"])
+
+    def test_surrounding_whitespace_is_ignored(self):
+        with self.assertRaises(ValidationError):
+            check_candidate_name_unique("  Resin A\t", ["Resin A"])
+        with self.assertRaises(ValidationError):
+            check_candidate_name_unique("Resin A", ["  resin a  "])
+
+    def test_interior_difference_is_a_different_name(self):
+        # Only trimming and case are normalised -- nothing cleverer is guessed.
+        check_candidate_name_unique("Resin  A", ["Resin A"])
+        check_candidate_name_unique("Resin A2", ["Resin A"])
+
+    def test_blank_name_is_rejected(self):
+        with self.assertRaises(ValidationError) as ctx:
+            check_candidate_name_unique("   ", [])
+        self.assertEqual(ctx.exception.field, "name")
+
+    def test_normalize_candidate_name(self):
+        self.assertEqual(normalize_candidate_name("  ReSiN A "), "resin a")
 
 
 class TestCanTriggerRankingRule(unittest.TestCase):

@@ -61,8 +61,11 @@ class TestReportRecommendationsUseTheLatestRanking(IsolatedApiTestCase):
         resp = client.post(f"/api/change-cases/{case_id}/report")
         self.assertEqual(resp.status_code, 200, resp.text)
         doc = Document(io.BytesIO(resp.content))
-        table = next(t for t in doc.tables if t.rows[0].cells[1].text == "Model-estimated probability")
-        ranked = {row.cells[0].text: row.cells[1].text for row in table.rows[1:]}
+        # Columns are located by header text (the table also carries Rank and Predicted-value columns).
+        table = next(t for t in doc.tables if "Model-estimated probability" in [c.text for c in t.rows[0].cells])
+        headers = [c.text for c in table.rows[0].cells]
+        name_col, prob_col = headers.index("Candidate"), headers.index("Model-estimated probability")
+        ranked = {row.cells[name_col].text: row.cells[prob_col].text for row in table.rows[1:]}
         recs, on = {}, False
         for p in doc.paragraphs:
             if p.style.name.startswith("Heading"):

@@ -6,6 +6,7 @@ backend/tests/test_report_builder.py) without needing a live DB.
 """
 import os
 import secrets
+from decimal import Decimal
 
 from docx import Document
 from docx.shared import Pt, RGBColor
@@ -100,6 +101,15 @@ DECISION_SUPPORT_EXPLANATION = (
     "mean qualified: physical validation is required for every candidate."
 )
 
+RANKING_ORDER_NOTE = (
+    "Candidates are ordered by model-estimated probability. Candidates with equal probability are "
+    "ordered by predicted value in the requirement's favorable direction, then by candidate ID."
+)
+PREDICTED_VALUE_MISSING_NOTE = (
+    "'Not recorded' means the stored ranking for that candidate was produced before predicted "
+    "values were saved. No value has been estimated or back-filled; re-run the ranking to obtain one."
+)
+
 DOMAIN_COVERAGE_LABELS = {
     "within_historical_domain": "Within historical range",
     "near_edge_of_domain": "Near edge of historical range",
@@ -115,6 +125,12 @@ HUMAN_DECISION_STATEMENT = (
     "with the customer's authorised qualification personnel, based on physical validation "
     "results and the customer's own qualification requirements."
 )
+
+
+def format_predicted_value(v: float) -> str:
+    """A predicted value to four significant digits, never in exponent notation (so 12345.6 reads
+    '12350', not '1.235e+04'). The product screen uses the same rule, so screen and report agree."""
+    return format(Decimal(f"{float(v):.4g}"), "f")
 
 
 def _kv_table(doc, rows):
@@ -450,33 +466,72 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
         # C1: the categorical decision-support column is shown whenever any
         # result carries it (i.e. always for real ranked predictions).
         show_decision = any(r.get("decision_support") for r in ranked_results)
-        table = doc.add_table(rows=1, cols=3 + int(show_coverage) + int(show_decision))
-        table.style = "Light Grid Accent 1"
-        hdr = table.rows[0].cells
-        hdr[0].text = "Candidate"
-        hdr[1].text = "Model-estimated probability"
-        hdr[2].text = "Uncertainty (std)"
-        next_col = 3
+        # Predicted target-property value: shown whenever results carry the field at all. A
+        # missing value (prediction stored before values were recorded) is labelled, never blank
+        # and never filled in.
+        show_value = any("predicted_value" in r for r in ranked_results)
+        show_rank = any(r.get("rank") for r in ranked_results)
+        spec = (audit_context or {}).get("spec")
+        target_unit = ((spec.get("units") or {}).get(spec["target_metric"])) if spec else None
+        unit_phrase = f" ({target_unit})" if target_unit else ""
+
+        if spec:
+            phrase = DIRECTION_PHRASE.get(spec.get("direction"), spec.get("direction", ""))
+            doc.add_paragraph(
+                f"Requirement: {spec['target_metric']}{unit_phrase} {phrase} {spec['target_value']} "
+                f"(direction: {spec.get('direction')}). "
+                + ("" if target_unit else
+                   "No canonical unit is declared for this property, so predicted values carry no unit here. ")
+                + "Predicted values and uncertainties below are MODEL ESTIMATES, not measured physical results."
+            )
+
+        headers = []
+        if show_rank:
+            headers.append("Rank")
+        headers.append("Candidate")
+        if show_value:
+            headers.append(f"Predicted {spec['target_metric']}{unit_phrase} (model estimate)" if spec
+                           else "Predicted value (model estimate)")
+        headers.append("Model-estimated probability")
+        headers.append(f"Uncertainty (std{', ' + target_unit if target_unit else ''})")
         if show_coverage:
-            hdr[next_col].text = "Historical data coverage"
-            next_col += 1
+            headers.append("Historical data coverage")
         if show_decision:
-            hdr[next_col].text = "Decision support"
+            headers.append("Decision support")
+
+        table = doc.add_table(rows=1, cols=len(headers))
+        table.style = "Light Grid Accent 1"
+        for cell, text in zip(table.rows[0].cells, headers):
+            cell.text = text
+        any_value_missing = False
         for r in ranked_results:
-            row = table.add_row().cells
-            row[0].text = r["candidate_name"]
-            row[1].text = f"{r['predicted_probability']:.0%}"
-            row[2].text = f"{r['uncertainty_std']:.3f}"
-            next_col = 3
+            values = []
+            if show_rank:
+                values.append(str(r.get("rank", "")))
+            values.append(r["candidate_name"])
+            if show_value:
+                if r.get("predicted_value") is None:
+                    any_value_missing = True
+                    values.append("Not recorded")
+                else:
+                    values.append(format_predicted_value(r["predicted_value"]))
+            values.append(f"{r['predicted_probability']:.0%}")
+            values.append(f"{r['uncertainty_std']:.3f}")
             if show_coverage:
                 cov = r.get("domain_coverage")
-                row[next_col].text = DOMAIN_COVERAGE_LABELS[cov["status"]] if cov else "Not assessed"
-                next_col += 1
+                values.append(DOMAIN_COVERAGE_LABELS[cov["status"]] if cov else "Not assessed")
             if show_decision:
                 ds = r.get("decision_support")
-                row[next_col].text = ds["label"] if ds else "Not assessed"
+                values.append(ds["label"] if ds else "Not assessed")
+            row = table.add_row().cells
+            for cell, text in zip(row, values):
+                cell.text = text
 
         doc.add_paragraph(MODEL_ESTIMATE_NOTE).runs[0].font.size = Pt(9)
+        if show_rank:
+            doc.add_paragraph(RANKING_ORDER_NOTE).runs[0].font.size = Pt(9)
+        if any_value_missing:
+            doc.add_paragraph(PREDICTED_VALUE_MISSING_NOTE).runs[0].font.size = Pt(9)
         if show_decision:
             doc.add_paragraph(DECISION_SUPPORT_EXPLANATION).runs[0].font.size = Pt(9)
 

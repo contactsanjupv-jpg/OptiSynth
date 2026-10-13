@@ -6,7 +6,7 @@ candidate's probability of matching the target spec, with uncertainty.
 
 This is deliberately NOT candidate discovery/generation. The product this
 serves (the forced-substitution qualification diagnostic) only ever
-scores candidates the customer already names -- typically 3-5 known
+scores candidates the customer already names -- any number of known
 alternative materials -- never proposes new ones. Reuses the exact same
 GP surrogate and normalization machinery as recommend_next and
 compute_model_metrics (engine/models/surrogate.py,
@@ -35,16 +35,27 @@ def rank_candidates(
       as passing (mirrors the existing convention in engine/optimization/direction.py).
     feature_names: the d feature column names, in X's column order.
     target_value: the spec threshold a candidate must meet.
-    candidates: list of dicts, each {"name": str, "features": {col: value}} --
-      SPECIFIC, CUSTOMER-NAMED points, never generated internally.
+    candidates: list of dicts, each {"id": <stable identifier>, "name": str,
+      "features": {col: value}} -- SPECIFIC, CUSTOMER-NAMED points, never
+      generated internally. "id" is the candidate's stable identity: it is
+      echoed back on every result and is what ties are broken on. "name" is
+      only a display label -- two candidates may even share one at this
+      level without being confused, because results are built per input
+      position, never looked up by name. "id" is optional here (callers
+      that have none get input position as the final tie-break).
     seed: passed straight to build_surrogate's random_state (see that
       module's docstring for why this must never be left as sklearn's
       default None).
 
-    Returns candidates ranked best-first (highest predicted_probability
-    first), each augmented with:
-      predicted_value, uncertainty_std, predicted_probability,
+    Returns candidates ranked best-first, each augmented with:
+      id, predicted_value, uncertainty_std, predicted_probability,
       model_version.
+
+    Ordering is fully deterministic (see ranking_sort_key): highest
+    predicted_probability first; ties are broken by the predicted value in
+    the requirement's favorable direction (higher for 'maximize', lower for
+    'minimize'); any remaining tie is broken by candidate id (or input
+    position when no ids were supplied).
 
     predicted_probability is P(candidate meets target_value | direction),
     computed from the GP's own predictive normal distribution (mu, sigma)
@@ -71,22 +82,69 @@ def rank_candidates(
     )
     cand_n = normalize(cand_raw, lo, hi)
 
-    mu, sigma = surrogate.predict(cand_n, return_std=True)
+    # Identical inputs must get identical estimates. Predicting a batch can differ in the last few
+    # floating-point digits depending on a row's position in it, which would make two candidates with
+    # the same inputs look different (and so rank by noise). Each DISTINCT input row is therefore
+    # predicted once and the result shared by every candidate that has that row.
+    unique_rows, inverse = np.unique(cand_n, axis=0, return_inverse=True)
+    inverse = np.asarray(inverse).reshape(-1)
+    mu_u, sigma_u = surrogate.predict(unique_rows, return_std=True)
+    mu, sigma = mu_u[inverse], sigma_u[inverse]
+
+    have_ids = all(c.get("id") is not None for c in candidates)
 
     results = []
     for i, c in enumerate(candidates):
         prob = _probability_meets_target(mu[i], sigma[i], target_value, direction)
         results.append({
+            "id": c.get("id"),
             "name": c["name"],
             "features": c["features"],
             "predicted_value": float(mu[i]),
             "uncertainty_std": float(sigma[i]),
             "predicted_probability": float(prob),
             "model_version": "gp-rank-v1",
+            "_input_position": i,
         })
 
-    results.sort(key=lambda r: r["predicted_probability"], reverse=True)
+    results.sort(key=lambda r: ranking_sort_key(
+        r["predicted_probability"], r["predicted_value"],
+        r["id"] if have_ids else r["_input_position"], direction,
+    ))
+    for r in results:
+        del r["_input_position"]
     return results
+
+
+# Probabilities and predicted values that agree to this many significant
+# digits are TIES. Two candidates with identical inputs go through identical
+# arithmetic but can differ in the last floating-point bits depending on how
+# the batch is evaluated; without this, which of them "wins" would be noise.
+_TIE_SIGNIFICANT_DIGITS = 12
+
+
+def _quantize(x: float) -> float:
+    return float(f"{x:.{_TIE_SIGNIFICANT_DIGITS}g}")
+
+
+def ranking_sort_key(predicted_probability: float, predicted_value, tiebreak, direction: str) -> tuple:
+    """The single definition of ranking order, used wherever candidates are
+    ordered (the ranking run itself, the stored-prediction listing and the
+    report) so they can never disagree.
+
+    Sorts ascending on: (1) negated model-estimated probability -- most likely
+    to meet the requirement first; (2) the predicted value in the
+    requirement's FAVORABLE direction -- highest first for 'maximize', lowest
+    first for 'minimize'; a missing predicted value (a prediction stored
+    before values were recorded) sorts after any recorded one; (3) the
+    candidate's stable id (or input position). Never the candidate's name."""
+    prob_key = -_quantize(float(predicted_probability))
+    if predicted_value is None:
+        value_key = float("inf")
+    else:
+        v = _quantize(float(predicted_value))
+        value_key = -v if direction == "maximize" else v
+    return (prob_key, value_key, tiebreak)
 
 
 def _probability_meets_target(mu: float, sigma: float, target_value: float, direction: str) -> float:
