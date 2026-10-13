@@ -17,7 +17,12 @@ What is and is not automated:
 - Units: a value is converted ONLY when the change case declares a canonical
   unit for that column AND the two units are in the small table below with an
   exact conversion factor. Anything else (unknown unit, different dimension,
-  e.g. hours vs percent) is blocked, never converted.
+  e.g. hours vs percent) is blocked, never converted. Unit SYMBOLS are
+  case-sensitive, because letter case changes the physical meaning ('MPa' is
+  megapascal, 'mPa' is millipascal, a factor of 10^9; 'Mm' is megametre, 'mm'
+  is millimetre). A symbol is recognised only in its exact table spelling; a
+  spelling that differs from a supported one only by letter case is refused with
+  a message naming the difference, never "corrected" silently.
 - Test conditions: declared condition columns are never collapsed. Rows
   measured under different conditions are blocked until a person names ONE
   reference condition set (the others are then excluded and recorded).
@@ -97,49 +102,117 @@ def summarize_blocking(flags, limit=6):
 # ---------------------------------------------------------------------------
 # Units
 # ---------------------------------------------------------------------------
-# token -> (dimension, factor to that dimension's base unit). Every factor is
-# exact by definition. A unit not in this table is "opaque": it is only ever
-# equal to the identical (normalised) token, never converted.
+# spelling -> (dimension, factor to that dimension's base unit). Every factor is
+# exact by definition. A unit not recognised here is "opaque": it is only ever
+# equal to the identical (structurally normalised) spelling, never converted.
+#
+# CASE RULE. Letter case is part of a unit symbol, so symbols are matched by EXACT
+# spelling only. Each accepted spelling is listed explicitly: nothing is derived by
+# case-folding. The three lower-case spellings below ('cp', 'pa.s', 'degc') are listed
+# on purpose because, unlike 'mpa.s' or 'p', they cannot be read as any other unit.
 _UNIT_TABLE = {
     # time (base: second)
     "s": ("time", 1.0), "sec": ("time", 1.0),
     "min": ("time", 60.0),
-    "h": ("time", 3600.0), "hr": ("time", 3600.0), "hour": ("time", 3600.0), "hours": ("time", 3600.0),
-    "d": ("time", 86400.0), "day": ("time", 86400.0), "days": ("time", 86400.0),
+    "h": ("time", 3600.0), "hr": ("time", 3600.0),
+    "d": ("time", 86400.0),
     # length (base: metre)
     "m": ("length", 1.0), "cm": ("length", 0.01), "mm": ("length", 0.001),
-    "um": ("length", 1e-6), "micron": ("length", 1e-6), "microns": ("length", 1e-6),
+    "um": ("length", 1e-6),
     "nm": ("length", 1e-9), "mil": ("length", 2.54e-5),
     # dynamic viscosity (base: mPa.s; 1 cP == 1 mPa.s exactly)
-    "mpa.s": ("viscosity", 1.0), "cp": ("viscosity", 1.0), "centipoise": ("viscosity", 1.0),
-    "pa.s": ("viscosity", 1000.0), "p": ("viscosity", 100.0), "poise": ("viscosity", 100.0),
+    "mPa.s": ("viscosity", 1.0), "cP": ("viscosity", 1.0), "cp": ("viscosity", 1.0),
+    "Pa.s": ("viscosity", 1000.0), "pa.s": ("viscosity", 1000.0),
+    "P": ("viscosity", 100.0),
     # temperature: identity only (offset scales are deliberately not converted)
-    "degc": ("temperature_c", 1.0), "c": ("temperature_c", 1.0),
+    "degC": ("temperature_c", 1.0), "degc": ("temperature_c", 1.0), "C": ("temperature_c", 1.0),
+}
+
+# Whole WORDS (not symbols) are matched ignoring case: 'Hours' and 'hours' are the
+# same word and no other unit is spelled that way. Stored lower-case.
+_UNIT_WORDS = {
+    "hour": ("time", 3600.0), "hours": ("time", 3600.0),
+    "day": ("time", 86400.0), "days": ("time", 86400.0),
+    "micron": ("length", 1e-6), "microns": ("length", 1e-6),
+    "centipoise": ("viscosity", 1.0), "poise": ("viscosity", 100.0),
 }
 
 
-def normalize_unit(unit):
-    """Canonical comparison token for a unit string (None stays None)."""
+def _structural_unit(unit):
+    """Whitespace and punctuation normalisation ONLY -- letter case is preserved.
+    Returns None for None / blank."""
     if unit is None:
         return None
-    u = str(unit).strip().lower()
+    u = str(unit).strip()
     u = u.replace("°", "deg").replace("µ", "u").replace("μ", "u").replace("·", ".").replace("*", ".")
     u = re.sub(r"\s+", "", u)
     return u or None
 
 
+def _lookup_unit(token):
+    """(dimension, factor) for a structurally normalised unit spelling, else None.
+    Symbols match exactly; whole words match case-insensitively."""
+    if token is None:
+        return None
+    if token in _UNIT_TABLE:
+        return _UNIT_TABLE[token]
+    return _UNIT_WORDS.get(token.lower())
+
+
+def normalize_unit(unit):
+    """Canonical comparison token for a unit string (None stays None). Letter case
+    is PRESERVED for symbols and unknown units, so 'MPa' and 'mPa' are different
+    tokens. Whole words are folded to lower case ('Hours' -> 'hours')."""
+    token = _structural_unit(unit)
+    if token is None:
+        return None
+    if token not in _UNIT_TABLE and token.lower() in _UNIT_WORDS:
+        return token.lower()
+    return token
+
+
+def case_only_alternatives(unit):
+    """Supported unit spellings that differ from `unit` ONLY by letter case (empty if `unit`
+    is itself supported, or has no case-only neighbour). Used to explain a refusal."""
+    token = _structural_unit(unit)
+    if token is None or _lookup_unit(token) is not None:
+        return []
+    low = token.lower()
+    return sorted(k for k in _UNIT_TABLE if k.lower() == low)
+
+
+def unit_problem_hint(unit, expected=None):
+    """Extra explanatory text for a refused unit, or ''. Only says something when the
+    refusal is a letter-case near miss: of a supported unit spelling, or of the unit
+    the case expects (`expected`)."""
+    if expected is not None and units_convertible(unit, expected):
+        return ""  # not a refusal: nothing to explain
+    alts = case_only_alternatives(unit)
+    exp = normalize_unit(expected)
+    got = normalize_unit(unit)
+    if exp is not None and got is not None and exp != got and exp.lower() == got.lower():
+        alts = sorted(set(alts) | {str(expected).strip()})
+    if not alts:
+        return ""
+    shown = ", ".join(repr(a) for a in alts)
+    return (f" Unit symbols are case-sensitive: {str(unit).strip()!r} differs from {shown} only by "
+            "letter case, which can change the meaning (for example 'MPa' is megapascal but 'mPa' is "
+            "millipascal). Nothing was assumed; write the unit exactly as the case defines it, or fix the source.")
+
+
 def convert_value(value, from_unit, to_unit):
     """Returns (ok, converted_value). ok is True only when the units are
-    identical after normalisation, or both are in _UNIT_TABLE with the same
-    dimension. Never guesses."""
+    identical after normalisation (exact spelling, case-sensitive), or both are
+    recognised with the same dimension. Never guesses."""
     f, t = normalize_unit(from_unit), normalize_unit(to_unit)
     if f is None or t is None:
         return False, None
     if f == t:
         return True, value
-    if f in _UNIT_TABLE and t in _UNIT_TABLE:
-        fd, ff = _UNIT_TABLE[f]
-        td, tf = _UNIT_TABLE[t]
+    fu, tu = _lookup_unit(f), _lookup_unit(t)
+    if fu is not None and tu is not None:
+        fd, ff = fu
+        td, tf = tu
         if fd == td:
             # 12 significant digits removes binary-float noise (e.g. 25.400000000000002)
             # so equal quantities stay exactly equal for duplicate/conflict checks.
@@ -404,12 +477,24 @@ def _condition_key(cell):
     if status == PARSE_OK and value is not None and math.isfinite(value):
         u = normalize_unit(unit)
         display = f"{value:g}" + (f" {unit.strip()}" if unit and unit.strip() else "")
-        if u in _UNIT_TABLE:
-            dim, factor = _UNIT_TABLE[u]
+        known = _lookup_unit(u)
+        if known is not None:
+            dim, factor = known
             return f"{dim}:{float(f'{value * factor:.12g}')!r}", display
         return f"{value:g}" + (f" {u}" if u else ""), display
     text = re.sub(r"\s+", " ", str(cell).strip().lower())
     return text, str(cell).strip()
+
+
+def _has_case_only_pair(tokens):
+    """True if two of the given unit tokens differ from each other only by letter case."""
+    seen = {}
+    for t in tokens:
+        low = str(t).lower()
+        if low in seen and seen[low] != t:
+            return True
+        seen.setdefault(low, t)
+    return False
 
 
 def analyze_rows(spec, headers, data_rows, options, row_refs=None):
@@ -605,6 +690,9 @@ def _analyze_rows_impl(spec, headers, data_rows, options, row_refs=None):
                 hint = (" These units are interconvertible: declare the canonical unit in the change case's "
                         "qualification_spec 'units' to have them converted explicitly, or fix the source."
                         if conv else " These units are not interconvertible; the source must be corrected.")
+                if _has_case_only_pair(seen):
+                    hint += (" Some of these units differ only by letter case (for example 'MPa' versus 'mPa'); "
+                             "unit symbols are case-sensitive, so they are different units and are never merged.")
                 flags.append(_flag(BLOCKING, "UNIT_MIXED",
                                    f"{canon!r} mixes units: {desc}.{hint}", column=canon))
             else:
@@ -617,7 +705,8 @@ def _analyze_rows_impl(spec, headers, data_rows, options, row_refs=None):
             bad_units = {u: r for u, r in seen.items() if not units_convertible(u, E)}
             for u, r in sorted(bad_units.items()):
                 flags.append(_flag(BLOCKING, "UNIT_INCOMPATIBLE",
-                                   f"{canon!r} must be in {E!r}; unit {u!r} cannot be safely converted to it.",
+                                   f"{canon!r} must be in {E!r}; unit {u!r} cannot be safely converted to it."
+                                   + unit_problem_hint(u, E),
                                    rows=r, column=canon))
             if not rows_no_unit and not bad_units:
                 for u, r in sorted(seen.items()):
@@ -771,7 +860,10 @@ def convert_candidate_inputs(spec, features, units):
         else:
             ok, v = convert_value(value, unit, canonical)
             if not ok:
-                problems.append(f"{col}: unit {unit!r} cannot be safely converted to this case's unit {canonical!r}.")
+                problems.append(
+                    f"{col}: unit {unit!r} cannot be safely converted to this case's unit {canonical!r}."
+                    + unit_problem_hint(unit, canonical)
+                )
             else:
                 converted[col] = v
                 entry["converted_value"] = v

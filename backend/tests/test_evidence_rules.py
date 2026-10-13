@@ -91,7 +91,11 @@ class TestUnitConversion(unittest.TestCase):
             self.assertEqual(er.convert_value(1, a, b), (False, None), (a, b))
 
     def test_unknown_units_equal_only_when_identical(self):
-        self.assertEqual(er.convert_value(3, "widgets", "Widgets"), (True, 3))
+        # Unit symbols are case-sensitive, so an unrecognised unit equals only the SAME spelling.
+        # (This used to assert that 'widgets' == 'Widgets'; letter case can change what a unit
+        # means -- MPa vs mPa -- so that equivalence was removed deliberately.)
+        self.assertEqual(er.convert_value(3, "widgets", "widgets"), (True, 3))
+        self.assertEqual(er.convert_value(3, "widgets", "Widgets"), (False, None))
         self.assertEqual(er.convert_value(3, "widgets", "gadgets"), (False, None))
 
     def test_temperature_scales_are_not_converted(self):
@@ -325,6 +329,226 @@ class TestUnits(unittest.TestCase):
         cells = ["100 %"] + [f"{100 + 40 * i} h" for i in range(1, 12)]
         review, rows, _ = run(SPEC_H, self._target_cells(cells))
         self.assertEqual(rows, [])  # the 11 good rows are NOT partially admitted
+
+
+class TestUnitCaseSensitivity(unittest.TestCase):
+    """Unit symbols are case-sensitive: letter case changes the physical meaning, so two units that
+    differ only by case must never be treated as equal or converted into each other. Supported
+    conversions are unchanged; everything unsupported fails safely."""
+
+    # Pairs that the old lower-casing logic treated as IDENTICAL (factor 1), several of them
+    # nine orders of magnitude apart.
+    CASE_ONLY_PAIRS = [
+        ("MPa.s", "mPa.s"), ("MPa\u00b7s", "cP"), ("Mm", "mm"), ("mm", "MM"), ("S", "s"), ("Min", "min"),
+        ("H", "h"), ("D", "d"), ("CP", "cP"), ("Cm", "cm"), ("PA.S", "Pa.s"), ("NM", "nm"), ("UM", "um"),
+        ("HR", "hr"), ("Sec", "sec"), ("M", "m"),
+    ]
+
+    def test_case_only_differences_are_never_equal_or_converted(self):
+        for a, b in self.CASE_ONLY_PAIRS:
+            self.assertEqual(er.convert_value(1, a, b), (False, None), (a, b))
+            self.assertEqual(er.convert_value(1, b, a), (False, None), (b, a))
+            self.assertFalse(er.units_convertible(a, b), (a, b))
+
+    def test_mega_and_milli_are_not_the_same_unit(self):
+        self.assertEqual(er.convert_value(1, "MPa.s", "mPa.s"), (False, None))
+        self.assertEqual(er.convert_value(1, "MPa\u00b7s", "cP"), (False, None))
+        self.assertEqual(er.convert_value(1, "Mm", "mm"), (False, None))
+        self.assertNotEqual(er.normalize_unit("MPa"), er.normalize_unit("mPa"))
+
+    def test_supported_spellings_still_convert_exactly(self):
+        cases = [
+            (1, "mPa.s", "cP", 1.0), (1, "mPa\u00b7s", "cP", 1.0), (142, "cP", "mPa\u00b7s", 142.0),
+            (1, "Pa.s", "cP", 1000.0), (1, "P", "cP", 100.0), (1, "Pa.s", "mPa.s", 1000.0),
+            (1, "mil", "um", 25.4), (1, "cm", "mm", 10.0), (1, "mm", "cm", 0.1), (1, "m", "mm", 1000.0),
+            (1, "um", "nm", 1000.0), (1, "day", "h", 24.0), (1, "d", "h", 24.0), (1440, "min", "h", 24.0),
+            (3600, "s", "h", 1.0), (60, "sec", "min", 1.0), (2, "hr", "min", 120.0), (25, "\u00b0C", "degC", 25),
+            (25, "C", "degC", 25),
+        ]
+        for v, a, b, expected in cases:
+            ok, out = er.convert_value(v, a, b)
+            self.assertTrue(ok, (a, b))
+            self.assertAlmostEqual(out, expected, places=9, msg=(v, a, b))
+
+    def test_structural_spellings_of_a_supported_symbol_are_accepted(self):
+        # degree sign, micro sign, middle dot and spaces are punctuation, not case
+        self.assertEqual(er.convert_value(5, "\u00b0C", "degC"), (True, 5))
+        self.assertEqual(er.convert_value(1, "\u00b5m", "um"), (True, 1))   # micro sign U+00B5
+        self.assertEqual(er.convert_value(1, "\u03bcm", "um"), (True, 1))   # Greek mu U+03BC
+        self.assertEqual(er.convert_value(1, " mPa \u00b7 s ", "cP"), (True, 1.0))   # inner spaces are removed
+        self.assertEqual(er.convert_value(1, "mPa*s", "cP"), (True, 1.0))
+
+    def test_whole_words_match_ignoring_case(self):
+        for word, expected in (("Hours", 1.0), ("HOURS", 1.0), ("Hour", 1.0), ("Days", 24.0), ("DAY", 24.0)):
+            self.assertEqual(er.convert_value(1, word, "h"), (True, expected), word)
+        self.assertEqual(er.convert_value(1, "Micron", "um"), (True, 1.0))
+        self.assertEqual(er.convert_value(1, "MICRONS", "um"), (True, 1.0))
+        self.assertEqual(er.convert_value(1, "Centipoise", "cP"), (True, 1.0))
+        self.assertEqual(er.convert_value(1, "Poise", "cP"), (True, 100.0))
+        self.assertEqual(er.normalize_unit("Hours"), "hours")
+        self.assertEqual(er.normalize_unit("HOURS"), er.normalize_unit("hours"))
+
+    def test_lowercase_spellings_that_cannot_mean_anything_else_stay_supported(self):
+        self.assertEqual(er.convert_value(1, "cp", "cP"), (True, 1.0))
+        self.assertEqual(er.convert_value(1, "pa.s", "cP"), (True, 1000.0))
+        self.assertEqual(er.convert_value(1, "degc", "degC"), (True, 1))
+
+    def test_lowercase_spellings_that_could_mean_something_else_are_refused(self):
+        # 'mpa.s' could be a lower-cased MPa.s; 'p' is pico, not poise; 'c' is not the Celsius symbol.
+        for u, to in (("mpa.s", "cP"), ("mpa", "cP"), ("p", "cP"), ("c", "degC")):
+            self.assertEqual(er.convert_value(1, u, to), (False, None), u)
+
+    def test_unsupported_units_and_dimension_mismatches_fail_safely(self):
+        for a, b in (("K", "degC"), ("\u00b0F", "degC"), ("kg", "g"), ("mg", "g"), ("wt%", "%"), ("ppm", "%"),
+                     ("MPa", "psi"), ("bar", "kPa"), ("in", "mm"), ("ft", "m"), ("mL", "L"), ("g/cm3", "kg/m3"),
+                     ("ms", "s"), ("h", "%"), ("cP", "h"), ("mm", "min"), ("cSt", "cP")):
+            self.assertEqual(er.convert_value(1, a, b), (False, None), (a, b))
+
+    def test_unrecognised_units_match_only_the_identical_spelling(self):
+        self.assertEqual(er.convert_value(7, "MPa", "MPa"), (True, 7))
+        self.assertEqual(er.convert_value(7, "psi", "psi"), (True, 7))
+        self.assertEqual(er.convert_value(7, "MPa", "mPa"), (False, None))
+        self.assertEqual(er.convert_value(7, "MPa", "psi"), (False, None))
+        self.assertEqual(er.convert_value(7, "MPa", "kPa"), (False, None))
+
+    def test_missing_or_blank_units_never_convert(self):
+        for a, b in ((None, "h"), ("h", None), ("", "h"), ("  ", "h"), (None, None)):
+            self.assertEqual(er.convert_value(1, a, b), (False, None), (a, b))
+
+    def test_normalize_unit_preserves_case_and_cleans_structure(self):
+        self.assertIsNone(er.normalize_unit(None))
+        self.assertIsNone(er.normalize_unit("   "))
+        self.assertEqual(er.normalize_unit(" \u00b0C "), "degC")
+        self.assertEqual(er.normalize_unit("mPa \u00b7 s"), "mPa.s")
+        self.assertEqual(er.normalize_unit("MPa"), "MPa")
+        self.assertEqual(er.normalize_unit("mPa"), "mPa")
+        self.assertEqual(er.normalize_unit("Mm"), "Mm")
+
+    def test_case_only_alternatives_and_hint_name_the_difference(self):
+        self.assertEqual(er.case_only_alternatives("MPa.s"), ["mPa.s"])
+        self.assertEqual(er.case_only_alternatives("Mm"), ["mm"])
+        self.assertEqual(er.case_only_alternatives("CP"), ["cP", "cp"])
+        self.assertEqual(er.case_only_alternatives("mm"), [])        # supported itself
+        self.assertEqual(er.case_only_alternatives("widgets"), [])   # no supported neighbour
+        hint = er.unit_problem_hint("Mm", "mm")
+        self.assertIn("case-sensitive", hint)
+        self.assertIn("'Mm'", hint)
+        self.assertIn("'mm'", hint)
+        self.assertEqual(er.unit_problem_hint("kg", "g"), "")                # unsupported, not a case problem
+        self.assertEqual(er.unit_problem_hint("cp", "cP"), "")               # accepted spelling: nothing to explain
+        self.assertIn("'MPa'", er.unit_problem_hint("mPa", "MPa"))           # case near-miss of the case's own unit
+
+    # ---- through the evidence gate (historical data) -------------------------------------
+    @staticmethod
+    def _visc_rows(units, values=None):
+        values = values or [100 + i for i in range(len(units))]
+        return [(f"{v} {u}", 10 + i) for i, (v, u) in enumerate(zip(values, units))]
+
+    def _run_visc(self, spec_unit, units, values=None):
+        spec = {"feature_columns": ["visc"], "target_metric": "y"}
+        if spec_unit:
+            spec["units"] = {"visc": spec_unit}
+        return run(spec, make_csv(["visc", "y"], self._visc_rows(units, values)))
+
+    def test_column_mixing_MPa_and_mPa_is_blocked_not_merged(self):
+        review, rows, _ = self._run_visc(None, ["MPa"] * 6 + ["mPa"] * 6)
+        self.assertEqual(rows, [])
+        f = next(f for f in review["flags"] if f["code"] == "UNIT_MIXED")
+        self.assertEqual(f["severity"], "blocking")
+        self.assertIn("MPa", f["message"])
+        self.assertIn("mPa", f["message"])
+        self.assertIn("not interconvertible", f["message"])
+        self.assertIn("differ only by letter case", f["message"])
+
+    def test_column_mixing_Mm_and_mm_is_blocked(self):
+        review, rows, _ = self._run_visc(None, ["Mm"] * 6 + ["mm"] * 6)
+        self.assertEqual(rows, [])
+        self.assertIn("UNIT_MIXED", codes(review, "blocking"))
+
+    def test_column_mixing_case_variants_of_a_supported_unit_is_blocked(self):
+        review, rows, _ = self._run_visc(None, ["h"] * 6 + ["H"] * 6)
+        self.assertEqual(rows, [])
+        self.assertIn("UNIT_MIXED", codes(review, "blocking"))
+
+    def test_MPa_s_cell_is_not_silently_accepted_as_centipoise(self):
+        review, rows, _ = self._run_visc("cP", ["cP"] * 11 + ["MPa\u00b7s"])
+        self.assertEqual(rows, [])  # nothing partially admitted
+        f = next(f for f in review["flags"] if f["code"] == "UNIT_INCOMPATIBLE")
+        self.assertEqual(f["rows"], [12])
+        self.assertIn("cannot be safely converted", f["message"])
+        self.assertIn("case-sensitive", f["message"])
+
+    def test_lowercased_mpa_s_cell_is_refused_against_a_viscosity_unit(self):
+        review, rows, _ = self._run_visc("mPa\u00b7s", ["mPa\u00b7s"] * 11 + ["mpa.s"])
+        self.assertEqual(rows, [])
+        self.assertIn("UNIT_INCOMPATIBLE", codes(review, "blocking"))
+
+    def test_canonical_unit_that_is_unrecognised_matches_only_exactly(self):
+        review, rows, _ = self._run_visc("MPa", ["MPa"] * 12)
+        self.assertEqual(er.blocking_flags(review["flags"]), [])
+        self.assertEqual(len(rows), 12)
+        review, rows, _ = self._run_visc("MPa", ["MPa"] * 11 + ["mPa"])
+        self.assertEqual(rows, [])
+        f = next(f for f in review["flags"] if f["code"] == "UNIT_INCOMPATIBLE")
+        self.assertIn("differs from 'MPa' only by letter case", f["message"])
+
+    def test_supported_viscosity_conversions_through_the_gate_are_exact(self):
+        review, rows, _ = self._run_visc("mPa\u00b7s", ["cP", "mPa\u00b7s", "Pa\u00b7s", "P", "Poise", "centipoise"] * 2,
+                                         values=list(range(1, 13)))
+        self.assertEqual(er.blocking_flags(review["flags"]), [])
+        self.assertEqual([r["features"]["visc"] for r in rows[:6]], [1.0, 2.0, 3000.0, 400.0, 500.0, 6.0])
+        self.assertIn("UNIT_CONVERTED", codes(review, "warning"))
+
+    def test_word_units_in_any_case_convert_through_the_gate(self):
+        cells = ["24 Hours", "1 DAY", "1440 min"] + [f"{100 + 40 * i} h" for i in range(3, 12)]
+        spec = SPEC_H
+        text = make_csv(CANON, [(a, b, c) for (a, b, _), c in zip(base_rows(12), cells)])
+        review, rows, _ = run(spec, text)
+        self.assertEqual(er.blocking_flags(review["flags"]), [])
+        self.assertEqual([r["target_value"] for r in rows[:3]], [24.0, 24.0, 24.0])
+
+    def test_unit_case_difference_in_a_declared_source_unit_is_refused(self):
+        cells = [f"{100 + 40 * i}" for i in range(12)]
+        text = make_csv(CANON, [(a, b, c) for (a, b, _), c in zip(base_rows(12), cells)])
+        review, rows, _ = run(SPEC_H, text, {"declared_units": {"salt_spray_hours": "H"}})
+        self.assertEqual(rows, [])
+        self.assertIn("UNIT_INCOMPATIBLE", codes(review, "blocking"))
+
+    def test_condition_units_are_case_sensitive_too(self):
+        header = CANON + ["Test Temp"]
+        rows_in = [r + (t,) for r, t in zip(base_rows(12), ["25 \u00b0C", "25 C", "25 degC"] * 4)]
+        review, rows, _ = run(SPEC, make_csv(header, rows_in), {"condition_columns": ["Test Temp"]})
+        self.assertEqual(er.blocking_flags(review["flags"]), [])  # three spellings of one supported unit
+        rows_in = [r + (t,) for r, t in zip(base_rows(12), ["25 C"] * 6 + ["25 c"] * 6)]
+        review, rows, _ = run(SPEC, make_csv(header, rows_in), {"condition_columns": ["Test Temp"]})
+        self.assertIn("CONDITIONS_DIFFER", codes(review, "blocking"))  # 'c' is not assumed to be 'C'
+
+    # ---- through candidate entry ------------------------------------------------------------
+    def test_candidate_entered_in_MPa_s_is_refused_against_cP(self):
+        spec = {"feature_columns": ["visc"], "target_metric": "y", "units": {"visc": "cP"}}
+        out, record, problems = er.convert_candidate_inputs(spec, {"visc": 5.0}, {"visc": "MPa\u00b7s"})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("cannot be safely converted", problems[0])
+        self.assertIn("case-sensitive", problems[0])
+        self.assertNotIn("converted_value", record["visc"])
+        self.assertEqual(out["visc"], 5.0)  # untouched, and the caller refuses the candidate
+
+    def test_candidate_entered_in_supported_units_converts_exactly(self):
+        spec = {"feature_columns": ["visc", "t"], "target_metric": "y", "units": {"visc": "cP", "t": "h"}}
+        out, record, problems = er.convert_candidate_inputs(
+            spec, {"visc": 2.0, "t": 2.0}, {"visc": "Pa\u00b7s", "t": "Days"})
+        self.assertEqual(problems, [])
+        self.assertEqual((out["visc"], out["t"]), (2000.0, 48.0))
+        self.assertEqual(record["visc"], {"value": 2.0, "unit": "Pa\u00b7s", "converted_value": 2000.0, "converted_unit": "cP"})
+
+    def test_candidate_unit_differing_only_by_case_from_the_case_unit_is_refused(self):
+        spec = {"feature_columns": ["d"], "target_metric": "y", "units": {"d": "mm"}}
+        for bad in ("Mm", "MM"):
+            _, _, problems = er.convert_candidate_inputs(spec, {"d": 1.0}, {"d": bad})
+            self.assertEqual(len(problems), 1, bad)
+            self.assertIn("case-sensitive", problems[0])
+        _, _, problems = er.convert_candidate_inputs(spec, {"d": 1.0}, {"d": "mm"})
+        self.assertEqual(problems, [])
 
 
 class TestConditions(unittest.TestCase):
