@@ -4,7 +4,8 @@ from backend.app.repositories import memberships_repo, invitations_repo, users_r
 from backend.app.schemas.errors import ValidationError
 from backend.app.schemas.team_schemas import InvitationPreviewResponse, InviteMemberRequest, UpdateMemberRoleRequest
 from backend.app.services.team_rules import (
-    check_can_manage_team, check_not_removing_last_owner, check_invitation_usable,
+    check_can_manage_team, check_can_invite_with_role, check_can_change_role, check_can_remove_member,
+    check_invitation_usable,
 )
 
 # There is no email-sending integration in this MVP -- invite_member()
@@ -17,8 +18,8 @@ def list_members(organization_id: int) -> list:
     return memberships_repo.list_members_for_organization(organization_id)
 
 
-def invite_member(organization_id: int, actor_role: str, body: InviteMemberRequest) -> dict:
-    check_can_manage_team(actor_role)
+def invite_member(organization_id: int, actor_role: str, actor_user_id: int, body: InviteMemberRequest) -> dict:
+    check_can_invite_with_role(actor_role, body.role)
 
     existing_user = users_repo.get_user_by_email(body.email)
     if existing_user:
@@ -27,7 +28,7 @@ def invite_member(organization_id: int, actor_role: str, body: InviteMemberReque
             raise ValidationError("This person is already a member of your organization.", field="email")
 
     result = invitations_repo.create_invitation(
-        organization_id, body.email, body.role, invited_by_user_id=None
+        organization_id, body.email, body.role, invited_by_user_id=actor_user_id
     )
     invite_url = f"{FRONTEND_BASE_URL}/login?invite={result['token']}"
     return {
@@ -55,29 +56,36 @@ def revoke_invitation(organization_id: int, actor_role: str, invitation_id: int)
         raise LookupError("Invitation not found.")
 
 
+_LAST_OWNER_MESSAGE = (
+    "Can't remove or demote the last owner of an organization. Promote another member to owner first."
+)
+
+
 def remove_member(organization_id: int, actor_role: str, target_user_id: int) -> None:
     check_can_manage_team(actor_role)
     membership = memberships_repo.get_membership(target_user_id, organization_id)
     if not membership:
         raise LookupError("Member not found.")
+    check_can_remove_member(actor_role, membership["role"])
+    outcome = memberships_repo.remove_membership_keeping_an_owner(organization_id, target_user_id)
+    if outcome == "last_owner":
+        raise ValidationError(_LAST_OWNER_MESSAGE)
+    if outcome == "not_found":
+        raise LookupError("Member not found.")
 
-    owner_count = memberships_repo.count_owners(organization_id)
-    check_not_removing_last_owner(membership["role"], owner_count)
 
-    memberships_repo.remove_membership(organization_id, target_user_id)
-
-
-def update_member_role(organization_id: int, actor_role: str, target_user_id: int, body: UpdateMemberRoleRequest) -> None:
+def update_member_role(organization_id: int, actor_role: str, actor_user_id: int, target_user_id: int,
+                       body: UpdateMemberRoleRequest) -> None:
     check_can_manage_team(actor_role)
     membership = memberships_repo.get_membership(target_user_id, organization_id)
     if not membership:
         raise LookupError("Member not found.")
-
-    if membership["role"] == "owner" and body.role != "owner":
-        owner_count = memberships_repo.count_owners(organization_id)
-        check_not_removing_last_owner("owner", owner_count)
-
-    memberships_repo.update_membership_role(organization_id, target_user_id, body.role)
+    check_can_change_role(actor_role, actor_user_id, target_user_id, membership["role"], body.role)
+    outcome = memberships_repo.update_membership_role_keeping_an_owner(organization_id, target_user_id, body.role)
+    if outcome == "last_owner":
+        raise ValidationError(_LAST_OWNER_MESSAGE)
+    if outcome == "not_found":
+        raise LookupError("Member not found.")
 
 
 def get_invitation_preview(token: str) -> InvitationPreviewResponse:

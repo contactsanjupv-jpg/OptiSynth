@@ -1,6 +1,16 @@
 import { apiRequest } from "@/lib/api/http";
 
 export type TriggerType = "regulatory_restriction" | "supplier_loss" | "component_obsolescence" | "other";
+/**
+ * What each status means (the only meanings the product gives them -- see
+ * backend change_case_lifecycle_rules.py):
+ *   draft      setup in progress; nobody has started the diagnostic.
+ *   active     in progress; a team member explicitly started it. Workflow progress, NOT a
+ *              qualification result.
+ *   completed  closed record; cannot be reopened.
+ * "Archived" is not a status: it is a separate marker (`archived_at`) -- hidden from the default list
+ * and read-only, with everything retained.
+ */
 export type ChangeCaseStatus = "draft" | "active" | "completed";
 
 export interface QualificationSpec {
@@ -20,8 +30,33 @@ export interface ChangeCase {
   status: ChangeCaseStatus;
   created_at: string;
   updated_at: string;
-  /** Returned by GET /api/change-cases/{id} as stored JSON text. */
+  /** Returned by the list and by GET /api/change-cases/{id} as stored JSON text. */
   qualification_spec_json?: string;
+  /** Set when archived (hidden from the default list, read-only). */
+  archived_at?: string | null;
+  archived?: boolean;
+  /** One-sentence meaning of the current state, from the server. */
+  status_meaning?: string;
+  /** What depends on the diagnostic. */
+  dataset_count?: number;
+  candidate_count?: number;
+  prediction_count?: number;
+  outcome_count?: number;
+  /** Permanent deletion is only offered while nothing depends on the diagnostic. */
+  deletable?: boolean;
+  delete_blocked_reason?: string | null;
+  /** The requirement (threshold / direction) is locked once candidates have been ranked. */
+  requirement_editable?: boolean;
+  requirement_locked_reason?: string | null;
+}
+
+/** Fields that can be edited. Send only what changed; restricted_substance null/"" clears it. */
+export interface ChangeCaseUpdate {
+  name?: string;
+  trigger_type?: TriggerType;
+  restricted_substance?: string | null;
+  target_value?: number;
+  direction?: "maximize" | "minimize";
 }
 
 export function parseSpec(changeCase: ChangeCase | null): QualificationSpec | null {
@@ -45,8 +80,35 @@ export function createChangeCase(
   });
 }
 
-export function listChangeCases() {
-  return apiRequest<ChangeCase[]>("/api/change-cases");
+export function listChangeCases(includeArchived = false) {
+  return apiRequest<ChangeCase[]>(`/api/change-cases${includeArchived ? "?include_archived=true" : ""}`);
+}
+
+export function updateChangeCase(changeCaseId: number, changes: ChangeCaseUpdate) {
+  return apiRequest<ChangeCase>(`/api/change-cases/${changeCaseId}`, { method: "PATCH", json: changes });
+}
+
+export function archiveChangeCase(changeCaseId: number) {
+  return apiRequest<ChangeCase>(`/api/change-cases/${changeCaseId}/archive`, { method: "POST" });
+}
+
+export function restoreChangeCase(changeCaseId: number) {
+  return apiRequest<ChangeCase>(`/api/change-cases/${changeCaseId}/restore`, { method: "POST" });
+}
+
+export interface DeleteChangeCaseResult {
+  deleted: boolean;
+  id: number;
+  name: string;
+  datasets_removed: number;
+  candidates_removed: number;
+  files_removed: number;
+  files_not_removed: number;
+}
+
+/** Permanent. Owners and admins only, and only while nothing depends on the diagnostic. */
+export function deleteChangeCase(changeCaseId: number) {
+  return apiRequest<DeleteChangeCaseResult>(`/api/change-cases/${changeCaseId}`, { method: "DELETE" });
 }
 
 export function getChangeCase(changeCaseId: number) {

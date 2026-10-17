@@ -22,7 +22,7 @@ def list_members(actor: AuthContext = Depends(get_current_actor)):
 
 @router.post("/invitations", status_code=201)
 def invite_member(body: InviteMemberRequest, actor: AuthContext = Depends(get_current_actor)):
-    result = team_service.invite_member(actor.organization_id, actor.role, body)
+    result = team_service.invite_member(actor.organization_id, actor.role, actor.user["id"], body)
     audit_service.log(actor.organization_id, actor.user["id"], "team.invite", detail=f"role={body.role}")
     return result
 
@@ -49,7 +49,7 @@ def remove_member(user_id: int, actor: AuthContext = Depends(get_current_actor))
 
 @router.patch("/members/{user_id}/role")
 def update_member_role(user_id: int, body: UpdateMemberRoleRequest, actor: AuthContext = Depends(get_current_actor)):
-    team_service.update_member_role(actor.organization_id, actor.role, user_id, body)
+    team_service.update_member_role(actor.organization_id, actor.role, actor.user["id"], user_id, body)
     audit_service.log(actor.organization_id, actor.user["id"], "team.update_role",
                        detail=f"user_id={user_id},role={body.role}")
     return {"ok": True}

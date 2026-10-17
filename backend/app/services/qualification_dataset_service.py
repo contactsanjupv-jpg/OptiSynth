@@ -188,23 +188,27 @@ def ingest_qualification_csv(
         _upload_dir_for_org(organization_id),
         stored_filename,
     )
-    with open(dest_path, "wb") as f:
-        f.write(file_bytes)
-    dataset_id = qualification_dataset_repo.create_qualification_dataset(
-        organization_id,
-        change_case_id,
-        uploaded_by_user_id,
-        filename,
-        stored_filename,
-        len(rows_out),
-        review_json=json.dumps(review),
-    )
-    qualification_dataset_repo.bulk_create_qualification_experiments(
-        organization_id,
-        change_case_id,
-        dataset_id,
-        rows_out,
-    )
+    # Order matters: the original file is written first, then the dataset record and every row are
+    # saved in ONE transaction. If either step fails the stored file is removed again, so a failed
+    # upload leaves neither a dataset record nor an orphaned file behind.
+    try:
+        with open(dest_path, "wb") as f:
+            f.write(file_bytes)
+        dataset_id = qualification_dataset_repo.create_dataset_with_experiments(
+            organization_id,
+            change_case_id,
+            uploaded_by_user_id,
+            filename,
+            stored_filename,
+            rows_out,
+            review_json=json.dumps(review),
+        )
+    except BaseException:
+        try:
+            os.remove(dest_path)
+        except FileNotFoundError:
+            pass
+        raise
     data_quality_status = change_case_rules.classify_data_quality(
         historical_row_count=len(rows_out),
         duplicate_count=duplicate_count,

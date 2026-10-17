@@ -23,6 +23,45 @@ def create_qualification_dataset(organization_id: int, change_case_id: int, uplo
         return row["id"]
 
 
+def create_dataset_with_experiments(organization_id: int, change_case_id: int, uploaded_by_user_id: int,
+                                    original_filename: str, stored_filename: str, rows: list,
+                                    review_json: str = None) -> int:
+    """Stores a dataset record AND all of its rows in ONE transaction. Either the dataset exists with
+    every accepted row, or nothing was written. (Previously the dataset record and its rows were
+    committed separately, so a failure while saving rows left a dataset that reported N rows but
+    held none -- and that empty dataset then counted as the case's latest evidence.)"""
+    created_at = now_iso()
+    with db_transaction() as conn:
+        row = conn.execute(
+            text("""INSERT INTO qualification_datasets
+                     (organization_id, change_case_id, uploaded_by_user_id, original_filename,
+                      stored_filename, row_count, review_json, created_at)
+                     VALUES (:org_id, :change_case_id, :uploaded_by, :original_filename,
+                             :stored_filename, :row_count, :review_json, :created_at) RETURNING id"""),
+            {"org_id": organization_id, "change_case_id": change_case_id, "uploaded_by": uploaded_by_user_id,
+             "original_filename": original_filename, "stored_filename": stored_filename,
+             "row_count": len(rows), "review_json": review_json, "created_at": created_at},
+        ).mappings().first()
+        dataset_id = row["id"]
+        if rows:
+            conn.execute(
+                text("""INSERT INTO qualification_experiments
+                         (organization_id, change_case_id, qualification_dataset_id,
+                          features_json, target_value, provenance_json, created_at)
+                         VALUES (:org_id, :change_case_id, :dataset_id, :features_json,
+                                 :target_value, :provenance_json, :created_at)"""),
+                [
+                    {"org_id": organization_id, "change_case_id": change_case_id,
+                     "dataset_id": dataset_id, "features_json": json.dumps(r["features"]),
+                     "target_value": r["target_value"],
+                     "provenance_json": json.dumps(r["provenance"]) if r.get("provenance") else None,
+                     "created_at": created_at}
+                    for r in rows
+                ],
+            )
+        return dataset_id
+
+
 def get_latest_dataset_for_change_case(organization_id: int, change_case_id: int):
     """The most recently uploaded dataset for a change case -- used as the
     dataset_version_id stamped onto every prediction, so a re-upload

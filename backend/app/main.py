@@ -21,6 +21,7 @@ from backend.app.config.settings import settings
 from backend.app.config.database import verify_migrations_at_head
 from backend.app.middleware.error_handling import register_error_handlers
 from backend.app.middleware.security_headers import SecurityHeadersMiddleware
+from backend.app.middleware.upload_limits import UploadSizeLimitMiddleware
 from backend.app.api.routes import (
     auth_routes, project_routes, dataset_routes, optimization_routes,
     report_routes, dashboard_routes, team_routes, change_case_routes,
@@ -57,6 +58,8 @@ def create_app() -> FastAPI:
         allow_headers=["Content-Type"],
     )
     app.add_middleware(SecurityHeadersMiddleware)
+    # Refuses an oversized file upload before the application reads it (see middleware/upload_limits.py).
+    app.add_middleware(UploadSizeLimitMiddleware)
 
     register_error_handlers(app)
 

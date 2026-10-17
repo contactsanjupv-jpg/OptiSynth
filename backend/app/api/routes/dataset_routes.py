@@ -4,6 +4,7 @@ installed here. Syntax-validated via py_compile only.
 """
 from fastapi import APIRouter, Depends, UploadFile, File
 
+from backend.app.middleware.upload_limits import read_upload_limited
 from backend.app.schemas.errors import ValidationError
 from backend.app.services import project_service, dataset_service, audit_service
 from backend.app.api.dependencies import get_current_actor, AuthContext
@@ -19,7 +20,7 @@ async def upload_dataset(project_id: int, file: UploadFile = File(...),
     if not file.filename:
         raise ValidationError("No file was selected.")
 
-    file_bytes = await file.read()
+    file_bytes = await read_upload_limited(file)
     result = dataset_service.ingest_csv(
         actor.organization_id, project_id, actor.user["id"], project, file.filename, file_bytes
     )

@@ -5,12 +5,145 @@ Phase 2 plan: customer-supplied candidates only (no product-level cap on how
 many the customer nominates), no candidate discovery/generation, no open-ended
 formulation optimization.
 """
+import math
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import ValidationError as PydanticValidationError
+
+from backend.app.schemas.errors import ValidationError
 
 
 TriggerType = Literal["regulatory_restriction", "supplier_loss", "component_obsolescence", "other"]
 ChangeCaseStatus = Literal["draft", "active", "completed"]
+
+
+# ---------------------------------------------------------------------------
+# Qualification specification (the requirement a diagnostic is defined by)
+# ---------------------------------------------------------------------------
+
+MAX_SPEC_FEATURES = 50
+MAX_NAME_LENGTH = 100
+MAX_UNIT_LENGTH = 40
+
+
+def _clean_name(value, what: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{what} must be text")
+    if value != value.strip():
+        raise ValueError(f"{what} {value!r} has leading or trailing spaces; remove them so it matches the data headers exactly")
+    if not value:
+        raise ValueError(f"{what} must not be empty")
+    if len(value) > MAX_NAME_LENGTH:
+        raise ValueError(f"{what} {value[:20]!r}... is longer than {MAX_NAME_LENGTH} characters")
+    if any(ord(ch) < 32 for ch in value):
+        raise ValueError(f"{what} {value!r} contains control characters")
+    return value
+
+
+class QualificationSpec(BaseModel):
+    """The requirement a diagnostic is built around. EVERY key here is read by the engine or the
+    evidence gate; unknown keys are rejected (extra='forbid') because an ignored key would let a
+    user believe the model honours a setting it never sees."""
+    model_config = ConfigDict(extra="forbid")
+
+    feature_columns: list[str] = Field(description="Modelled input properties, named exactly as in the evidence data.")
+    target_metric: str = Field(description="The property the requirement is on.")
+    target_value: float = Field(description="Threshold the target property must reach.")
+    direction: Literal["maximize", "minimize"] = Field(
+        description="'maximize': the property must be at or above target_value; 'minimize': at or below.")
+    units: dict[str, str] | None = Field(
+        default=None, description="Canonical unit per modelled column. Columns left out are not unit-checked.")
+
+    @field_validator("feature_columns", mode="after")
+    @classmethod
+    def _features(cls, value):
+        if not value:
+            raise ValueError("at least one feature column is required")
+        if len(value) > MAX_SPEC_FEATURES:
+            raise ValueError(f"at most {MAX_SPEC_FEATURES} feature columns are supported")
+        seen = {}
+        for name in value:
+            _clean_name(name, "feature column")
+            key = name.casefold()
+            if key in seen:
+                raise ValueError(f"feature column {name!r} is listed twice"
+                                 + ("" if seen[key] == name else f" (as {seen[key]!r} and {name!r}; names are compared ignoring case)"))
+            seen[key] = name
+        return value
+
+    @field_validator("target_metric", mode="after")
+    @classmethod
+    def _target(cls, value):
+        return _clean_name(value, "target metric")
+
+    @field_validator("target_value", mode="before")
+    @classmethod
+    def _target_value(cls, value):
+        # bool is an int subclass and strings like "80" would be silently coerced: both are refused.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("target value must be a number")
+        if not math.isfinite(value):
+            raise ValueError("target value must be a finite number (not NaN or infinity)")
+        return float(value)
+
+    @field_validator("units", mode="after")
+    @classmethod
+    def _units(cls, value):
+        if value is None:
+            return value
+        for column, unit in value.items():
+            _clean_name(column, "unit column")
+            if not unit.strip():
+                raise ValueError(f"the unit for {column!r} must not be empty (leave the column out to leave it unchecked)")
+            if len(unit) > MAX_UNIT_LENGTH:
+                raise ValueError(f"the unit for {column!r} is longer than {MAX_UNIT_LENGTH} characters")
+        return value
+
+    @model_validator(mode="after")
+    def _cross_checks(self):
+        features = {f.casefold() for f in self.feature_columns}
+        if self.target_metric.casefold() in features:
+            raise ValueError(f"the target metric {self.target_metric!r} is also listed as a feature column; "
+                             "a model cannot predict a value it is also given as an input")
+        known = set(self.feature_columns) | {self.target_metric}
+        if self.units:
+            unknown = sorted(set(self.units) - known)
+            if unknown:
+                raise ValueError("units name columns that are neither features nor the target metric: "
+                                 + ", ".join(repr(u) for u in unknown))
+        return self
+
+
+def _describe_spec_errors(err: PydanticValidationError) -> str:
+    problems = []
+    for e in err.errors():
+        loc = ".".join(str(x) for x in e["loc"])
+        kind = e["type"]
+        if kind == "missing":
+            problems.append(f"'{loc}' is required.")
+        elif kind == "extra_forbidden":
+            problems.append(f"Unrecognized field '{loc}'; it would be ignored by the model, so it is not accepted.")
+        elif kind == "literal_error" and loc == "direction":
+            problems.append("'direction' must be 'maximize' or 'minimize'.")
+        else:
+            msg = str(e["msg"])
+            if msg.startswith("Value error, "):
+                msg = msg[len("Value error, "):]
+            problems.append(f"{loc + ': ' if loc else ''}{msg[0].upper() + msg[1:]}" + ("" if msg.endswith(".") else "."))
+    return "Invalid qualification_spec. " + " ".join(problems)
+
+
+def validate_qualification_spec(raw) -> dict:
+    """Validates a qualification spec and returns the clean dict that is stored. Raises the
+    product's ValidationError (HTTP 400, customer-safe message). Used by every code path that
+    creates or changes a spec, so a direct API call gets exactly the checks the form does."""
+    if not isinstance(raw, dict):
+        raise ValidationError("Invalid qualification_spec. It must be an object.", field="qualification_spec")
+    try:
+        spec = QualificationSpec.model_validate(raw)
+    except PydanticValidationError as err:
+        raise ValidationError(_describe_spec_errors(err), field="qualification_spec") from None
+    return spec.model_dump(exclude_none=True)
 
 
 # ---------------------------------------------------------------------------
@@ -26,6 +159,38 @@ class CreateChangeCaseRequest(BaseModel):
 
 class UpdateStatusRequest(BaseModel):
     status: ChangeCaseStatus
+
+
+class UpdateChangeCaseRequest(BaseModel):
+    """Partial edit of a diagnostic: only the fields that are sent are changed (send
+    restricted_substance as null or "" to clear it). Fields that define the evidence structure
+    (feature columns, target metric, units) are deliberately not editable; unknown fields are
+    rejected, not ignored."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=200)
+    trigger_type: TriggerType | None = None
+    restricted_substance: str | None = Field(default=None, max_length=500)
+    target_value: float | None = None
+    direction: Literal["maximize", "minimize"] | None = None
+
+    @field_validator("target_value", mode="before")
+    @classmethod
+    def _target_value(cls, value):
+        if value is None:
+            return value
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("target value must be a number")
+        if not math.isfinite(value):
+            raise ValueError("target value must be a finite number (not NaN or infinity)")
+        return float(value)
+
+    @field_validator("name", "trigger_type", "direction", "target_value", mode="after")
+    @classmethod
+    def _not_null_when_sent(cls, value, info):
+        if value is None:
+            raise ValueError(f"{info.field_name} can't be empty")
+        return value
 
 
 class AddCandidateRequest(BaseModel):
@@ -59,6 +224,8 @@ class ChangeCaseResponse(BaseModel):
     status: ChangeCaseStatus
     created_at: str
     updated_at: str
+    # Set when the diagnostic is archived (hidden from the default list and read-only).
+    archived_at: str | None = None
 
     model_config = {"from_attributes": True}
 

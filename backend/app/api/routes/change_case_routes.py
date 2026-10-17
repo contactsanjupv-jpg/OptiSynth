@@ -6,46 +6,107 @@ change_case_service.py / change_case_rules.py), audit-logged on writes.
 """
 import json
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form
+from fastapi import APIRouter, Depends, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse
 
+from backend.app.middleware.upload_limits import read_upload_limited
 from backend.app.schemas.errors import ValidationError
 from backend.app.schemas.change_case_schemas import (
     CreateChangeCaseRequest,
+    validate_qualification_spec,
     UpdateStatusRequest,
+    UpdateChangeCaseRequest,
     AddCandidateRequest,
     RecordOutcomeRequest,
 )
-from backend.app.services import change_case_service, qualification_dataset_service, audit_service
+from backend.app.services import (
+    change_case_service, change_case_lifecycle_service, change_case_lifecycle_rules,
+    qualification_dataset_service, audit_service,
+)
 from backend.app.repositories import change_case_repo, candidate_repo, organizations_repo
 from backend.app.api.dependencies import get_current_actor, AuthContext
 
 router = APIRouter(prefix="/api/change-cases", tags=["change-cases"])
 
 
+def _writable_case(actor: AuthContext, change_case_id: int) -> dict:
+    """The diagnostic, for a WRITE: 404 if it is not this organization's (checked first, so an archived
+    diagnostic of another organization is indistinguishable from a missing one), then refused if it is
+    archived. Archived diagnostics are read-only."""
+    case = change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)
+    change_case_lifecycle_rules.check_not_archived(case)
+    return case
+
+
 @router.post("", status_code=201)
 async def create_change_case(body: CreateChangeCaseRequest, actor: AuthContext = Depends(get_current_actor)):
+    # Strict, explicit validation of the requirement BEFORE anything is stored (direct API calls
+    # get exactly the checks the form gets).
+    spec = validate_qualification_spec(body.qualification_spec)
     case = change_case_service.create_change_case(
         actor.organization_id, actor.user["id"], body.name, body.trigger_type,
-        body.restricted_substance, body.qualification_spec,
+        body.restricted_substance, spec,
     )
     audit_service.log(actor.organization_id, actor.user["id"], "change_case.create", detail=f"name={body.name}")
     return case
 
 
 @router.get("")
-async def list_change_cases(actor: AuthContext = Depends(get_current_actor)):
-    return change_case_repo.list_change_cases(actor.organization_id)
+async def list_change_cases(include_archived: bool = Query(False), actor: AuthContext = Depends(get_current_actor)):
+    """Diagnostics with what depends on each and what may be done with it. Archived ones are only
+    included when include_archived=true."""
+    return change_case_lifecycle_service.list_cases(actor.organization_id, include_archived)
 
 
 @router.get("/{change_case_id}")
 async def get_change_case(change_case_id: int, actor: AuthContext = Depends(get_current_actor)):
-    return change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)
+    change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)  # the 404 gate every route shares
+    return change_case_lifecycle_service.get_case_or_404(actor.organization_id, change_case_id)
+
+
+@router.patch("/{change_case_id}")
+async def update_change_case(change_case_id: int, body: UpdateChangeCaseRequest,
+                              actor: AuthContext = Depends(get_current_actor)):
+    """Edit name, change reason, restricted substance and (until rankings exist) the requirement's
+    threshold and direction. Only the fields sent are changed."""
+    changes = body.model_dump(exclude_unset=True)
+    result = change_case_lifecycle_service.update_case(actor.organization_id, change_case_id, changes)
+    audit_service.log(actor.organization_id, actor.user["id"], "change_case.update",
+                       detail=f"change_case_id={change_case_id} fields={','.join(sorted(changes))}")
+    return result
+
+
+@router.post("/{change_case_id}/archive")
+async def archive_change_case(change_case_id: int, actor: AuthContext = Depends(get_current_actor)):
+    result = change_case_lifecycle_service.archive_case(actor.organization_id, change_case_id)
+    audit_service.log(actor.organization_id, actor.user["id"], "change_case.archive",
+                       detail=f"change_case_id={change_case_id}")
+    return result
+
+
+@router.post("/{change_case_id}/restore")
+async def restore_change_case(change_case_id: int, actor: AuthContext = Depends(get_current_actor)):
+    result = change_case_lifecycle_service.restore_case(actor.organization_id, change_case_id)
+    audit_service.log(actor.organization_id, actor.user["id"], "change_case.restore",
+                       detail=f"change_case_id={change_case_id}")
+    return result
+
+
+@router.delete("/{change_case_id}")
+async def delete_change_case(change_case_id: int, actor: AuthContext = Depends(get_current_actor)):
+    """Permanent deletion -- owners and admins only, and only for a diagnostic nothing depends on (no
+    rankings, no recorded outcomes, not completed). Otherwise refused with the reason; archive instead."""
+    result = change_case_lifecycle_service.delete_case(actor.organization_id, actor.role, change_case_id)
+    audit_service.log(actor.organization_id, actor.user["id"], "change_case.delete",
+                       detail=f"change_case_id={change_case_id} datasets_removed={result['datasets_removed']} "
+                              f"candidates_removed={result['candidates_removed']}")
+    return result
 
 
 @router.patch("/{change_case_id}/status")
 async def update_status(change_case_id: int, body: UpdateStatusRequest,
                          actor: AuthContext = Depends(get_current_actor)):
+    _writable_case(actor, change_case_id)
     result = change_case_service.update_status(actor.organization_id, change_case_id, body.status)
     audit_service.log(actor.organization_id, actor.user["id"], "change_case.status_update",
                        detail=f"change_case_id={change_case_id} new_status={body.status}")
@@ -61,7 +122,7 @@ async def extract_evidence(change_case_id: int, file: UploadFile = File(...),
     case = change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)
     if not file.filename:
         raise ValidationError("No file was selected.")
-    file_bytes = await file.read()
+    file_bytes = await read_upload_limited(file)
     spec = json.loads(case["qualification_spec_json"])
     return qualification_dataset_service.extract_evidence_tables(spec, file.filename, file_bytes)
 
@@ -91,7 +152,7 @@ async def preview_qualification_dataset(change_case_id: int, file: UploadFile = 
     case = change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)
     if not file.filename:
         raise ValidationError("No file was selected.")
-    file_bytes = await file.read()
+    file_bytes = await read_upload_limited(file)
     spec = json.loads(case["qualification_spec_json"])
     return qualification_dataset_service.preview_qualification_csv(spec, file.filename, file_bytes, options)
 
@@ -100,10 +161,10 @@ async def preview_qualification_dataset(change_case_id: int, file: UploadFile = 
 async def upload_qualification_dataset(change_case_id: int, file: UploadFile = File(...),
                                         options: str | None = Form(None),
                                         actor: AuthContext = Depends(get_current_actor)):
-    case = change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)
+    case = _writable_case(actor, change_case_id)
     if not file.filename:
         raise ValidationError("No file was selected.")
-    file_bytes = await file.read()
+    file_bytes = await read_upload_limited(file)
     spec = json.loads(case["qualification_spec_json"])
     result = qualification_dataset_service.ingest_qualification_csv(
         actor.organization_id, change_case_id, actor.user["id"], spec, file.filename, file_bytes, options,
@@ -118,6 +179,7 @@ async def upload_qualification_dataset(change_case_id: int, file: UploadFile = F
 @router.post("/{change_case_id}/candidates", status_code=201)
 async def add_candidate(change_case_id: int, body: AddCandidateRequest,
                          actor: AuthContext = Depends(get_current_actor)):
+    _writable_case(actor, change_case_id)
     candidate = change_case_service.add_candidate(
         actor.organization_id, change_case_id, body.name, body.features, body.units,
     )
@@ -134,6 +196,7 @@ async def list_candidates(change_case_id: int, actor: AuthContext = Depends(get_
 
 @router.post("/{change_case_id}/rank")
 async def rank_change_case(change_case_id: int, actor: AuthContext = Depends(get_current_actor)):
+    _writable_case(actor, change_case_id)
     results = change_case_service.rank_change_case(actor.organization_id, change_case_id)
     audit_service.log(actor.organization_id, actor.user["id"], "change_case.rank",
                        detail=f"change_case_id={change_case_id} candidates_ranked={len(results)}")
@@ -143,10 +206,20 @@ async def rank_change_case(change_case_id: int, actor: AuthContext = Depends(get
 @router.post("/{change_case_id}/candidates/{candidate_id}/outcome", status_code=201)
 async def record_outcome(change_case_id: int, candidate_id: int, body: RecordOutcomeRequest,
                           actor: AuthContext = Depends(get_current_actor)):
-    change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)  # 404 if not owned
+    _writable_case(actor, change_case_id)  # 404 if not owned; refused if archived
     candidate = candidate_repo.get_candidate(actor.organization_id, candidate_id)
     if candidate is None or candidate["change_case_id"] != change_case_id:
         raise LookupError("Candidate not found.")
+    if body.recommended_experiment_id is not None:
+        # The experiment must be one of THIS candidate's own recommended experiments, in this
+        # organization. One message for "missing", "someone else's" and "another candidate's", so the
+        # response never reveals whether an id exists elsewhere.
+        experiment = candidate_repo.get_recommended_experiment(actor.organization_id, body.recommended_experiment_id)
+        if experiment is None or experiment["candidate_id"] != candidate_id:
+            raise ValidationError(
+                "That recommended experiment does not belong to this candidate.",
+                field="recommended_experiment_id",
+            )
     result = change_case_service.record_outcome(
         actor.organization_id, candidate_id, body.recommended_experiment_id,
         body.actual_result, body.passed_spec, actor.user["id"],

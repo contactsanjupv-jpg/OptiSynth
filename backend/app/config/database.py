@@ -28,7 +28,7 @@ drift for now since schema.sql is documentation, not the source of truth.
 import os
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 
 from backend.app.config.settings import settings
@@ -36,12 +36,27 @@ from backend.app.config.settings import settings
 
 def _make_engine() -> Engine:
     connect_args = {}
-    if settings.DATABASE_URL.startswith("sqlite"):
+    is_sqlite = settings.DATABASE_URL.startswith("sqlite")
+    if is_sqlite:
         # Needed because FastAPI may serve a request on a different thread
         # than the one that opened the connection; PostgreSQL doesn't need
         # this flag at all.
         connect_args = {"check_same_thread": False}
-    return create_engine(settings.DATABASE_URL, connect_args=connect_args, future=True)
+    new_engine = create_engine(settings.DATABASE_URL, connect_args=connect_args, future=True)
+    if is_sqlite:
+        # SQLite does NOT enforce FOREIGN KEY constraints unless this pragma is switched on, and
+        # it is a per-CONNECTION setting that defaults to OFF -- so every pooled connection must
+        # enable it as it is created. Without it every REFERENCES / ON DELETE clause in the schema
+        # is documentation only: dangling references are accepted and deletes never cascade.
+        # (PostgreSQL always enforces foreign keys.)
+        @event.listens_for(new_engine, "connect")
+        def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA foreign_keys=ON")
+            finally:
+                cursor.close()
+    return new_engine
 
 
 engine: Engine = _make_engine()

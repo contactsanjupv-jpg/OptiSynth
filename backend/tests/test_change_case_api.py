@@ -3330,94 +3330,31 @@ class TestChangeCaseApi(unittest.TestCase):
 
 
     def test_candidate_creation_before_dataset_upload_unaffected_by_a2(
-
         self,
-
     ):
-
         # A2 only applies once the case has feature_columns to check against;
-
-        # it must not invent a new requirement for a case whose spec doesn't
-
-        # define any yet (mirrors existing dataset-upload behavior, which
-
-        # only enforces spec completeness once feature_columns/target_metric
-
-        # are present). self._spec() always includes feature_columns, so
-
-        # build the incomplete spec directly here rather than via _new_case.
-
+        # it must not invent a new requirement for a case whose stored spec doesn't
+        # define any. Since Level 1 the API refuses to CREATE such a case (see
+        # test_qualification_spec_validation), so this scenario can now only exist as a row that
+        # was stored before that validation. The row is therefore built through the repository,
+        # exactly as an older database row would look, and the candidate path is unchanged.
         client = self.client_factory()
-
-
-
-        self._signup(
-
-            client,
-
-            "p6-a2-nospec@coatings.com",
-
-            "P6 A2 NoSpec Coatings",
-
-        )
-
-
-
+        self._signup(client, "p6-a2-nospec@coatings.com", "P6 A2 NoSpec Coatings")
+        refused = client.post("/api/change-cases", json={
+            "name": "no spec yet", "trigger_type": "regulatory_restriction",
+            "restricted_substance": "PFHxA", "qualification_spec": {"target_value": 80.0}})
+        self.assertEqual(refused.status_code, 400)  # the API no longer creates an incomplete diagnostic
+        import json as _json
+        from backend.app.repositories import change_case_repo, users_repo
+        org_id = self._org_id("P6 A2 NoSpec Coatings")
+        user_id = users_repo.get_user_by_email("p6-a2-nospec@coatings.com")["id"]
+        case_id = change_case_repo.create_change_case(
+            org_id, user_id, "no spec yet", "regulatory_restriction", "PFHxA", _json.dumps({"target_value": 80.0}))
         r = client.post(
-
-            "/api/change-cases",
-
-            json={
-
-                "name": "no spec yet",
-
-                "trigger_type": "regulatory_restriction",
-
-                "restricted_substance": "PFHxA",
-
-                "qualification_spec": {
-
-                    "target_value": 80.0,
-
-                },
-
-            },
-
-        )
-
-
-
-        self.assertEqual(r.status_code, 201)
-
-
-
-        case_id = r.json()["id"]
-
-
-
-        r = client.post(
-
             f"/api/change-cases/{case_id}/candidates",
-
-            json={
-
-                "name": "Whatever",
-
-                "features": {
-
-                    "anything": 1.0,
-
-                },
-
-            },
-
+            json={"name": "Whatever", "features": {"anything": 1.0}},
         )
-
-
-
         self.assertEqual(r.status_code, 201)
-
-
 
     def test_ranking_rejects_candidate_that_bypasses_creation_validation(
 

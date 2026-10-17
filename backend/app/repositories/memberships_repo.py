@@ -74,3 +74,47 @@ def update_membership_role(organization_id: int, user_id: int, role: str) -> boo
             {"role": role, "org_id": organization_id, "user_id": user_id},
         )
         return result.rowcount > 0
+
+
+# The two functions below enforce "an organization always keeps at least one owner" INSIDE the
+# single UPDATE / DELETE statement. A separate count-then-write (what the service used to do)
+# is a race: two owners demoting each other at the same moment would both see "2 owners" and
+# the organization would end up with none.
+_OWNER_COUNT_GT_ONE = """(SELECT COUNT(*) FROM memberships
+                           WHERE organization_id = :org_id AND role = 'owner') > 1"""
+
+
+def update_membership_role_keeping_an_owner(organization_id: int, user_id: int, role: str) -> str:
+    """-> 'updated' | 'not_found' | 'last_owner'. Never leaves the organization without an owner."""
+    with db_transaction() as conn:
+        result = conn.execute(
+            text(f"""UPDATE memberships SET role = :role
+                      WHERE organization_id = :org_id AND user_id = :user_id
+                        AND (role != 'owner' OR :role = 'owner' OR {_OWNER_COUNT_GT_ONE})"""),
+            {"role": role, "org_id": organization_id, "user_id": user_id},
+        )
+        if result.rowcount > 0:
+            return "updated"
+        exists = conn.execute(
+            text("SELECT 1 FROM memberships WHERE organization_id = :org_id AND user_id = :user_id"),
+            {"org_id": organization_id, "user_id": user_id},
+        ).first()
+        return "last_owner" if exists else "not_found"
+
+
+def remove_membership_keeping_an_owner(organization_id: int, user_id: int) -> str:
+    """-> 'removed' | 'not_found' | 'last_owner'. Never leaves the organization without an owner."""
+    with db_transaction() as conn:
+        result = conn.execute(
+            text(f"""DELETE FROM memberships
+                      WHERE organization_id = :org_id AND user_id = :user_id
+                        AND (role != 'owner' OR {_OWNER_COUNT_GT_ONE})"""),
+            {"org_id": organization_id, "user_id": user_id},
+        )
+        if result.rowcount > 0:
+            return "removed"
+        exists = conn.execute(
+            text("SELECT 1 FROM memberships WHERE organization_id = :org_id AND user_id = :user_id"),
+            {"org_id": organization_id, "user_id": user_id},
+        ).first()
+        return "last_owner" if exists else "not_found"

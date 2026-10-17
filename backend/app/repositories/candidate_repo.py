@@ -184,6 +184,17 @@ def count_outcomes_for_candidate(organization_id: int, candidate_id: int) -> int
         return result or 0
 
 
+def get_recommended_experiment(organization_id: int, recommended_experiment_id: int):
+    """Org-scoped lookup of one recommended experiment (None if it does not exist or belongs to
+    another organization)."""
+    with db_connection() as conn:
+        row = conn.execute(
+            text("SELECT * FROM recommended_experiments WHERE id = :id AND organization_id = :org_id"),
+            {"id": recommended_experiment_id, "org_id": organization_id},
+        ).mappings().first()
+        return dict(row) if row else None
+
+
 def create_outcome(organization_id: int, candidate_id: int, recommended_experiment_id,
                     actual_result: str, passed_spec: bool, recorded_by_user_id: int) -> int:
     with db_transaction() as conn:
