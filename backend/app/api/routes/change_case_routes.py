@@ -17,10 +17,12 @@ from backend.app.schemas.change_case_schemas import (
     UpdateStatusRequest,
     UpdateChangeCaseRequest,
     AddCandidateRequest,
+    UpdateCandidateRequest,
     RecordOutcomeRequest,
 )
 from backend.app.services import (
     change_case_service, change_case_lifecycle_service, change_case_lifecycle_rules,
+    candidate_lifecycle_service, candidate_lifecycle_rules,
     qualification_dataset_service, audit_service,
 )
 from backend.app.repositories import change_case_repo, candidate_repo, organizations_repo
@@ -189,9 +191,60 @@ async def add_candidate(change_case_id: int, body: AddCandidateRequest,
 
 
 @router.get("/{change_case_id}/candidates")
-async def list_candidates(change_case_id: int, actor: AuthContext = Depends(get_current_actor)):
+async def list_candidates(change_case_id: int, include_archived: bool = Query(False),
+                           actor: AuthContext = Depends(get_current_actor)):
+    """The candidates with their newest prediction, whether it still describes them, and what may be
+    done with each. Candidates removed from the analysis are only included when include_archived=true."""
     change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)  # 404 if not owned
-    return change_case_service.list_candidates_with_predictions(actor.organization_id, change_case_id)
+    return change_case_service.list_candidates_with_predictions(
+        actor.organization_id, change_case_id, include_archived)
+
+
+@router.patch("/{change_case_id}/candidates/{candidate_id}")
+async def update_candidate(change_case_id: int, candidate_id: int, body: UpdateCandidateRequest,
+                            actor: AuthContext = Depends(get_current_actor)):
+    """Edit a candidate's name and/or input values. Only the fields sent are changed. Changing input
+    values keeps the old prediction as history but marks it as computed for the previous values."""
+    _writable_case(actor, change_case_id)  # 404 if not owned; refused if archived
+    result = candidate_lifecycle_service.update_candidate(
+        actor.organization_id, change_case_id, candidate_id, body.model_dump(exclude_unset=True))
+    changed = result.pop("_changed")
+    previous = result.pop("_previous_features")
+    audit_service.log(actor.organization_id, actor.user["id"], "candidate.update",
+                       detail=f"change_case_id={change_case_id} candidate_id={candidate_id} "
+                              f"fields={','.join(changed)} inputs_version={result.get('inputs_version')}"
+                              + (f" previous_features={json.dumps(previous, sort_keys=True)}" if previous else ""))
+    return result
+
+
+@router.post("/{change_case_id}/candidates/{candidate_id}/archive")
+async def archive_candidate(change_case_id: int, candidate_id: int, actor: AuthContext = Depends(get_current_actor)):
+    """Remove a candidate from the analysis. Nothing is deleted; it can be restored."""
+    _writable_case(actor, change_case_id)
+    result = candidate_lifecycle_service.archive_candidate(actor.organization_id, change_case_id, candidate_id)
+    audit_service.log(actor.organization_id, actor.user["id"], "candidate.archive",
+                       detail=f"change_case_id={change_case_id} candidate_id={candidate_id}")
+    return result
+
+
+@router.post("/{change_case_id}/candidates/{candidate_id}/restore")
+async def restore_candidate(change_case_id: int, candidate_id: int, actor: AuthContext = Depends(get_current_actor)):
+    _writable_case(actor, change_case_id)
+    result = candidate_lifecycle_service.restore_candidate(actor.organization_id, change_case_id, candidate_id)
+    audit_service.log(actor.organization_id, actor.user["id"], "candidate.restore",
+                       detail=f"change_case_id={change_case_id} candidate_id={candidate_id}")
+    return result
+
+
+@router.delete("/{change_case_id}/candidates/{candidate_id}")
+async def delete_candidate(change_case_id: int, candidate_id: int, actor: AuthContext = Depends(get_current_actor)):
+    """Permanent deletion -- only for a candidate nothing depends on (never ranked, no recorded
+    outcome). Otherwise refused with the reason; remove it from the analysis instead."""
+    _writable_case(actor, change_case_id)
+    result = candidate_lifecycle_service.delete_candidate(actor.organization_id, change_case_id, candidate_id)
+    audit_service.log(actor.organization_id, actor.user["id"], "candidate.delete",
+                       detail=f"change_case_id={change_case_id} candidate_id={candidate_id}")
+    return result
 
 
 @router.post("/{change_case_id}/rank")
@@ -210,6 +263,8 @@ async def record_outcome(change_case_id: int, candidate_id: int, body: RecordOut
     candidate = candidate_repo.get_candidate(actor.organization_id, candidate_id)
     if candidate is None or candidate["change_case_id"] != change_case_id:
         raise LookupError("Candidate not found.")
+    # A candidate removed from the analysis takes no new results; restore it first.
+    candidate_lifecycle_rules.check_candidate_not_archived(candidate)
     if body.recommended_experiment_id is not None:
         # The experiment must be one of THIS candidate's own recommended experiments, in this
         # organization. One message for "missing", "someone else's" and "another candidate's", so the

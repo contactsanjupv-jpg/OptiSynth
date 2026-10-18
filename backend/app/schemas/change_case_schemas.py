@@ -193,6 +193,19 @@ class UpdateChangeCaseRequest(BaseModel):
         return value
 
 
+def _strict_feature_values(value):
+    """Feature values must be real JSON numbers. Pydantic's default float coercion would silently turn
+    True into 1.0 and the text "5" into 5.0 -- a value the user did not type as a number being used as
+    model input. NaN / infinity are refused later with the candidate-specific message
+    (change_case_rules.check_candidate_features_finite)."""
+    if not isinstance(value, dict):
+        return value  # the type check below produces the error
+    for key, v in value.items():
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError(f"the value for {key!r} must be a number")
+    return value
+
+
 class AddCandidateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     features: dict[str, float] = Field(
@@ -204,6 +217,29 @@ class AddCandidateRequest(BaseModel):
         description="Unit for each feature value, required wherever the change case declares a canonical "
         "unit for that feature. Converted only by an exact factor; never guessed.",
     )
+
+    _check_numbers = field_validator("features", mode="before")(_strict_feature_values)
+
+
+class UpdateCandidateRequest(BaseModel):
+    """Partial edit of a candidate: only the fields that are sent are changed. `features` replaces the
+    candidate's WHOLE set of input values (every modelled feature must be present, with its unit
+    wherever the diagnostic declares one); `units` is only accepted together with `features`.
+    Unknown fields are rejected, not ignored."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=200)
+    features: dict[str, float] | None = None
+    units: dict[str, str] | None = None
+
+    _check_numbers = field_validator("features", mode="before")(_strict_feature_values)
+
+    @field_validator("name", "features", mode="after")
+    @classmethod
+    def _not_null_when_sent(cls, value, info):
+        if value is None:
+            raise ValueError(f"{info.field_name} can't be empty")
+        return value
 
 
 class RecordOutcomeRequest(BaseModel):
@@ -263,6 +299,26 @@ class CandidateResponse(BaseModel):
     prediction_dataset: dict | None = None
     current_dataset: dict | None = None
     stale_notice: str | None = None
+    # Level 1D. False = the prediction was computed for the candidate's CURRENT input values; True =
+    # the values were edited after the ranking ran (the prediction is kept as history, but rank,
+    # domain coverage and decision support are withheld); None = no prediction yet.
+    prediction_inputs_stale: bool | None = None
+    # True when candidates were added / removed / restored / edited after the ranking ran, so the order
+    # is out of date (rank is withheld for every candidate until the ranking is re-run).
+    ranking_outdated: bool | None = None
+    # Ready-to-show sentence when either of the two flags above applies.
+    ranking_notice: str | None = None
+    # Stored values for fields this diagnostic does not model (legacy rows); never used by the model.
+    ignored_properties: dict | None = None
+    # Lifecycle: what depends on the candidate and what may be done with it.
+    archived: bool = False
+    archived_at: str | None = None
+    prediction_count: int = 0
+    outcome_count: int = 0
+    deletable: bool = True
+    delete_blocked_reason: str | None = None
+    features_editable: bool = True
+    features_locked_reason: str | None = None
     latest_prediction: PredictionResponse | None = None
     # Heuristic historical-range coverage, judged against the dataset the
     # latest prediction was generated from. None if not yet ranked.

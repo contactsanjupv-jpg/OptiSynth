@@ -345,8 +345,48 @@ export interface Candidate {
   domain_coverage: DomainCoverage | null;
   /** null until the candidate has been ranked. */
   decision_support: DecisionSupport | null;
-  /** 1 = best, by the same deterministic order the ranking run used. null until the candidate has a prediction. */
+  /** 1 = best, by the same deterministic order the ranking run used. null until the candidate has a prediction,
+   *  and withheld (null) whenever the ranking no longer covers the candidates as they are now. */
   rank?: number | null;
+  /** Bumped every time the candidate's input values change. */
+  inputs_version?: number;
+  /**
+   * true = the candidate's input values were edited AFTER latest_prediction was computed: the prediction is
+   * kept as history but describes the PREVIOUS values (rank, domain coverage and decision support are
+   * withheld). false = computed for the current values. null = no prediction yet.
+   */
+  prediction_inputs_stale?: boolean | null;
+  /** true = candidates were added / removed / restored / edited after the ranking ran, so the order is out of date. */
+  ranking_outdated?: boolean | null;
+  /** Ready-to-show sentence when prediction_inputs_stale or ranking_outdated applies. */
+  ranking_notice?: string | null;
+  /** Stored values for fields the diagnostic does not model (older rows). Never used by the model. */
+  ignored_properties?: Record<string, number> | null;
+  /** Removed from the analysis: hidden by default, excluded from ranking, retained with its history. */
+  archived?: boolean;
+  archived_at?: string | null;
+  prediction_count?: number;
+  outcome_count?: number;
+  /** Permanent deletion is only offered while nothing depends on the candidate. */
+  deletable?: boolean;
+  delete_blocked_reason?: string | null;
+  /** The input values are locked once a physical outcome has been recorded. */
+  features_editable?: boolean;
+  features_locked_reason?: string | null;
+}
+
+/** Fields that can be edited. Send only what changed. `features` replaces the WHOLE set of input values, and
+ *  `units` is only accepted together with `features`. */
+export interface CandidateUpdate {
+  name?: string;
+  features?: Record<string, number>;
+  units?: Record<string, string>;
+}
+
+export interface DeleteCandidateResult {
+  deleted: boolean;
+  id: number;
+  name: string;
 }
 
 export function addCandidate(
@@ -361,8 +401,33 @@ export function addCandidate(
   });
 }
 
-export function listCandidates(changeCaseId: number) {
-  return apiRequest<Candidate[]>(`/api/change-cases/${changeCaseId}/candidates`);
+export function listCandidates(changeCaseId: number, includeArchived = false) {
+  return apiRequest<Candidate[]>(
+    `/api/change-cases/${changeCaseId}/candidates${includeArchived ? "?include_archived=true" : ""}`,
+  );
+}
+
+export function updateCandidate(changeCaseId: number, candidateId: number, changes: CandidateUpdate) {
+  return apiRequest<Candidate>(`/api/change-cases/${changeCaseId}/candidates/${candidateId}`, {
+    method: "PATCH",
+    json: changes,
+  });
+}
+
+/** Removes a candidate from the analysis. Nothing is deleted; it can be restored. */
+export function archiveCandidate(changeCaseId: number, candidateId: number) {
+  return apiRequest<Candidate>(`/api/change-cases/${changeCaseId}/candidates/${candidateId}/archive`, { method: "POST" });
+}
+
+export function restoreCandidate(changeCaseId: number, candidateId: number) {
+  return apiRequest<Candidate>(`/api/change-cases/${changeCaseId}/candidates/${candidateId}/restore`, { method: "POST" });
+}
+
+/** Permanent. Only while the candidate has never been ranked and has no recorded outcome. */
+export function deleteCandidate(changeCaseId: number, candidateId: number) {
+  return apiRequest<DeleteCandidateResult>(`/api/change-cases/${changeCaseId}/candidates/${candidateId}`, {
+    method: "DELETE",
+  });
 }
 
 export interface RankResult {

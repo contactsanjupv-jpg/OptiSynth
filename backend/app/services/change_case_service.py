@@ -57,6 +57,8 @@ from backend.app.repositories import (
 
 from backend.app.services import change_case_rules, evidence_rules
 
+from backend.app.services import candidate_lifecycle_rules as cand_rules
+
 from backend.app.schemas.errors import ValidationError
 
 
@@ -114,8 +116,10 @@ def add_candidate(organization_id: int, change_case_id: int, name: str, features
     # No product-level cap on candidates, but names must be unique within the
     # diagnostic (trimmed, case-insensitive) so two candidates can never be
     # confused for each other in the ranking or the report.
+    # (Candidates removed from the analysis count too: restoring one must never create a duplicate name.)
     change_case_rules.check_candidate_name_unique(
-        name, [c["candidate_name"] for c in candidate_repo.list_candidates_for_change_case(organization_id, change_case_id)],
+        name, [c["candidate_name"] for c in candidate_repo.list_candidates_for_change_case(
+            organization_id, change_case_id, include_archived=True)],
     )
     # Priority 6 (A2): reject an incomplete candidate up front, once the case
     # has a qualification_spec with feature_columns defined -- otherwise a
@@ -123,6 +127,9 @@ def add_candidate(organization_id: int, change_case_id: int, name: str, features
     # fail later, opaquely, when ranking tries to read the missing feature.
     spec = json.loads(case["qualification_spec_json"])
     change_case_rules.check_candidate_features_complete(spec.get("feature_columns"), features, name)
+    # Level 1D: a value for a field the diagnostic does not model is refused, not silently stored
+    # (it would be shown beside the candidate although the model never reads it).
+    cand_rules.check_features_known(spec.get("feature_columns"), features, name)
     change_case_rules.check_candidate_features_finite(features, name)
     # Same canonical-unit discipline as the historical data: where the case
     # declares a unit the candidate must state one and it is converted only by
@@ -175,7 +182,26 @@ def get_evidence_sufficiency(organization_id: int, change_case_id: int) -> dict:
         "stale": stale, "has_predictions": has_predictions,
         "current_filename": dataset["original_filename"] if dataset else None,
     }
-    return _assess_sufficiency(spec, dataset, experiments, candidates, ranking_status)
+    result = _assess_sufficiency(spec, dataset, experiments, candidates, ranking_status)
+    # Level 1D (informational, never blocks): do the rankings on screen still describe the candidates as
+    # they are now? Candidate edits and additions/removals leave the old rankings as history only.
+    views = list_candidates_with_predictions(organization_id, change_case_id)
+    edited = [v["candidate_name"] for v in views if v.get("prediction_inputs_stale")]
+    order_outdated = any(v.get("ranking_outdated") for v in views)
+    if edited or order_outdated:
+        detail = []
+        if edited:
+            detail.append("Input values were changed after the ranking ran for: " + ", ".join(edited) + ".")
+        if order_outdated:
+            detail.append(cand_rules.ORDER_OUTDATED_NOTICE)
+        detail.append("Re-run ranking before relying on the order or the estimates.")
+        check = change_case_rules._check(
+            "RANKING_MATCHES_CANDIDATES", change_case_rules.SUFFICIENCY_WARN,
+            "Rankings describe the current candidates", " ".join(detail),
+        )
+        result["checks"].append(check)
+        result["warnings"].append(check)
+    return result
 
 
 def _historical_ranges(spec: dict, experiments: list):
@@ -191,25 +217,64 @@ def _dataset_ref(dataset):
     return {"id": dataset["id"], "original_filename": dataset["original_filename"]} if dataset else None
 
 
-def list_candidates_with_predictions(organization_id: int, change_case_id: int) -> list:
-    candidates = candidate_repo.list_candidates_for_change_case(organization_id, change_case_id)
-    spec = None
+def list_candidates_with_predictions(organization_id: int, change_case_id: int, include_archived: bool = False) -> list:
+    """The diagnostic's candidates, each with its newest prediction and everything needed to read that
+    prediction honestly: what dataset and which input values it was computed for, whether the ranking
+    still describes the current candidates, and what may be done with the candidate.
+    Candidates removed from the analysis (archived) are included only when asked for."""
+    case = get_change_case_or_404(organization_id, change_case_id)
+    spec = json.loads(case["qualification_spec_json"])
+    feature_columns = list(spec.get("feature_columns") or [])
+    everyone = candidate_repo.list_candidates_for_change_case(organization_id, change_case_id, include_archived=True)
+    candidates = [c for c in everyone if include_archived or not c.get("archived_at")]
+    usage_map = candidate_repo.get_candidate_usage_map(organization_id, change_case_id)
     ranges_by_dataset = {}
     # Stale-ranking marker: a prediction is STALE when the dataset it was generated from
     # is no longer the current (newest) dataset. Display-only: nothing below changes which
     # dataset anything is computed from.
     latest_dataset = qualification_dataset_repo.get_latest_dataset_for_change_case(organization_id, change_case_id)
     dataset_refs = {}
+    predictions = {}
+
+    def prediction_of(candidate):
+        if candidate["id"] not in predictions:
+            predictions[candidate["id"]] = candidate_repo.get_latest_prediction_for_candidate(
+                organization_id, candidate["id"])
+        return predictions[candidate["id"]]
+
+    # Does the ranking still cover the candidates as they are now? It does not if candidates were added,
+    # removed or restored after the latest run, or if any candidate's input values were edited since.
+    active_all = [c for c in everyone if not c.get("archived_at")]
+    archived_all = [c for c in everyone if c.get("archived_at")]
+    set_changed = cand_rules.ranking_set_changed(
+        [{"latest_prediction_created_at": (prediction_of(c) or {}).get("created_at"),
+          "restored_at": c.get("restored_at")} for c in active_all],
+        [{"archived_at": c["archived_at"],
+          "prediction_count": (usage_map.get(c["id"]) or {}).get("prediction_count", 0)} for c in archived_all],
+    )
+    any_edited = any(cand_rules.prediction_matches_inputs(c, prediction_of(c)) is False for c in active_all)
+    order_outdated = set_changed or any_edited
+
     for c in candidates:
-        c["properties"] = json.loads(c["properties_json"])
+        stored = json.loads(c["properties_json"])
+        # Only the modelled input features are shown as the candidate's inputs. A value stored for any
+        # other field (possible only in rows created before unknown fields were refused) is reported
+        # separately and never presented as something the model used.
+        c["properties"] = {k: v for k, v in stored.items() if k in feature_columns} if feature_columns else stored
+        extra = {k: v for k, v in stored.items() if feature_columns and k not in feature_columns}
+        c["ignored_properties"] = extra or None
         c["input_record"] = json.loads(c["input_json"]) if c.get("input_json") else None
-        c["latest_prediction"] = candidate_repo.get_latest_prediction_for_candidate(organization_id, c["id"])
+        c.update(cand_rules.lifecycle_flags(c, usage_map.get(c["id"])))
+        c["latest_prediction"] = prediction_of(c)
         c["domain_coverage"] = None
         c["decision_support"] = None  # C1: None until a prediction exists
         c["prediction_stale"] = None  # None until a prediction exists
         c["prediction_dataset"] = None
         c["current_dataset"] = _dataset_ref(latest_dataset)
         c["stale_notice"] = None
+        c["prediction_inputs_stale"] = None
+        c["ranking_outdated"] = None
+        c["ranking_notice"] = None
         pred = c["latest_prediction"]
         if pred is None:
             continue
@@ -225,13 +290,21 @@ def list_candidates_with_predictions(organization_id: int, change_case_id: int) 
                 (c["prediction_dataset"] or {}).get("original_filename", "an earlier dataset"),
                 latest_dataset["original_filename"],
             )
+        # Level 1D: was the candidate's input data edited after this prediction was computed? Then the
+        # prediction is kept as history but describes the OLD values: coverage and decision support
+        # computed from the NEW values must not be shown beside it, and it takes no part in the ranking.
+        c["prediction_inputs_stale"] = not cand_rules.prediction_matches_inputs(c, pred)
+        if c["prediction_inputs_stale"]:
+            c["ranking_notice"] = cand_rules.INPUTS_CHANGED_NOTICE
+            continue
+        if not c["archived"]:
+            c["ranking_outdated"] = order_outdated
+            if order_outdated:
+                c["ranking_notice"] = cand_rules.ORDER_OUTDATED_NOTICE
         # Domain coverage is judged against the dataset THIS prediction was
         # generated from (dataset_version_id) -- never the latest upload --
         # so a later, wider dataset can't quietly turn an extrapolation into
         # an in-range candidate.
-        if spec is None:
-            case = get_change_case_or_404(organization_id, change_case_id)
-            spec = json.loads(case["qualification_spec_json"])
         dataset_id = pred["dataset_version_id"]
         if dataset_id not in ranges_by_dataset:
             experiments = qualification_dataset_repo.list_experiments_for_dataset(organization_id, dataset_id)
@@ -249,14 +322,20 @@ def list_candidates_with_predictions(organization_id: int, change_case_id: int) 
 
 
 def _assign_ranks(candidates: list, spec) -> None:
-    """Sets c["rank"] (1 = best) on every candidate that has a prediction, None on the rest,
-    using the SAME ordering rule as the ranking run itself (engine ranking_sort_key:
-    probability, then predicted value in the favorable direction, then candidate id), applied
-    to the STORED predictions -- so a page refresh shows exactly the order the run produced.
-    The list itself stays in candidate-id order."""
+    """Sets c["rank"] (1 = best) on every candidate whose prediction is for its CURRENT inputs, in a
+    ranking that still covers the current set of candidates, None on the rest -- using the SAME
+    ordering rule as the ranking run itself (engine ranking_sort_key: probability, then predicted
+    value in the favorable direction, then candidate id), applied to the STORED predictions, so a page
+    refresh shows exactly the order the run produced. A candidate removed from the analysis is never
+    ranked, and after an edit or a change of the candidate set no order is shown at all until the
+    ranking is re-run. The list itself stays in candidate-id order."""
     for c in candidates:
         c["rank"] = None
-    ranked = [c for c in candidates if c.get("latest_prediction")]
+    ranked = [
+        c for c in candidates
+        if c.get("latest_prediction") and not c.get("prediction_inputs_stale")
+        and not c.get("ranking_outdated") and not c.get("archived")
+    ]
     if not ranked:
         return
     direction = (spec or {}).get("direction", "maximize")
@@ -431,6 +510,9 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
     ranked = engine_rank_candidates(X, y, direction, feature_columns, target_value, engine_candidates)
 
     candidate_ids = {c["id"] for c in candidates}
+    # The inputs_version each candidate had when it was read: every prediction is stamped with it, so
+    # a later edit of the candidate's values is recognised as "this prediction is for the old values".
+    versions_read = {c["id"]: int(c.get("inputs_version") or 0) for c in candidates}
     ranked_ids = [r["id"] for r in ranked]
     if len(ranked_ids) != len(candidate_ids) or set(ranked_ids) != candidate_ids:
         raise RuntimeError(
@@ -448,6 +530,7 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
         experiment_description = _minimum_experiment_description(r, target_value, direction, domain_coverage)
         to_persist.append({
             "candidate_id": candidate_id,
+            "inputs_version": versions_read[candidate_id],
             "model_version": r["model_version"],
             "predicted_value": r["predicted_value"],
             "predicted_probability": r["predicted_probability"],
@@ -474,7 +557,14 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
             "uncertainty_calibration": uncertainty_calibration,
         })
 
-    candidate_repo.persist_ranking(organization_id, dataset["id"], to_persist)
+    try:
+        candidate_repo.persist_ranking(organization_id, dataset["id"], to_persist)
+    except candidate_repo.RankingConflict:
+        raise ValidationError(
+            "A candidate was changed while the ranking was running, so nothing was saved. "
+            "Run the ranking again.",
+            field="candidates",
+        ) from None
     return results
 
 
@@ -540,9 +630,12 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
     # NEVER silently against a newer upload. Only when no predictions exist
     # yet (so there is no provenance to preserve) does it fall back to the
     # latest dataset, which is then simply the data basis of an empty report.
+    # A prediction computed for input values the candidate no longer has is history, not a result for the
+    # candidate as it is now: it takes no part in the report's ranking (the candidate is listed as not
+    # yet ranked).
     prediction_dataset_ids = {
         c["latest_prediction"]["dataset_version_id"]
-        for c in candidates if c.get("latest_prediction")
+        for c in candidates if c.get("latest_prediction") and not c.get("prediction_inputs_stale")
     }
     if len(prediction_dataset_ids) > 1:
         raise ValidationError(
@@ -579,7 +672,7 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
     ranked_results = []
     for c in candidates:
         pred = c.get("latest_prediction")
-        if pred is None:
+        if pred is None or c.get("prediction_inputs_stale"):
             continue
         # The recommendation text is built from THIS candidate's latest prediction and the domain
         # coverage shown beside it, by the same function that wrote the stored recommendation when
@@ -626,12 +719,14 @@ def _build_report_audit_context(organization_id: int, change_case_id: int, case:
     Outcomes are shown NEXT TO the model estimate for comparison only."""
     from datetime import datetime, timezone
     spec = json.loads(case["qualification_spec_json"])
-    predictions = [c["latest_prediction"] for c in candidates if c.get("latest_prediction")]
-    name_by_id = {c["id"]: c["candidate_name"] for c in candidates}
-    prob_by_id = {
-        c["id"]: c["latest_prediction"]["predicted_probability"]
-        for c in candidates if c.get("latest_prediction")
+    current = [c for c in candidates if c.get("latest_prediction") and not c.get("prediction_inputs_stale")]
+    predictions = [c["latest_prediction"] for c in current]
+    # Outcomes recorded for a candidate that was later removed from the analysis keep its name.
+    name_by_id = {
+        c["id"]: c["candidate_name"]
+        for c in candidate_repo.list_candidates_for_change_case(organization_id, change_case_id, include_archived=True)
     }
+    prob_by_id = {c["id"]: c["latest_prediction"]["predicted_probability"] for c in current}
     outcomes = [
         {
             "candidate_name": name_by_id.get(o["candidate_id"], "Unknown candidate"),
@@ -657,7 +752,7 @@ def _build_report_audit_context(organization_id: int, change_case_id: int, case:
             {
                 "candidate_name": c["candidate_name"],
                 "properties": c["properties"],
-                "has_prediction": c.get("latest_prediction") is not None,
+                "has_prediction": bool(c.get("latest_prediction")) and not c.get("prediction_inputs_stale"),
                 "input_record": c.get("input_record"),
             }
             for c in candidates
