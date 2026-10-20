@@ -45,7 +45,7 @@ import json
 import numpy as np
 
 
-from engine.facade import rank_candidates as engine_rank_candidates, ranking_sort_key
+from engine.facade import rank_candidates as engine_rank_candidates
 
 
 from backend.app.repositories import (
@@ -58,6 +58,7 @@ from backend.app.repositories import (
 from backend.app.services import change_case_rules, evidence_rules
 
 from backend.app.services import candidate_lifecycle_rules as cand_rules
+from backend.app.services import ranking_evidence_rules
 
 from backend.app.schemas.errors import ValidationError
 
@@ -322,29 +323,40 @@ def list_candidates_with_predictions(organization_id: int, change_case_id: int, 
 
 
 def _assign_ranks(candidates: list, spec) -> None:
-    """Sets c["rank"] (1 = best) on every candidate whose prediction is for its CURRENT inputs, in a
-    ranking that still covers the current set of candidates, None on the rest -- using the SAME
-    ordering rule as the ranking run itself (engine ranking_sort_key: probability, then predicted
-    value in the favorable direction, then candidate id), applied to the STORED predictions, so a page
-    refresh shows exactly the order the run produced. A candidate removed from the analysis is never
-    ranked, and after an edit or a change of the candidate set no order is shown at all until the
-    ranking is re-run. The list itself stays in candidate-id order."""
+    """Sets c["rank"], c["ranking_status"] and c["ranking_statement"] on every candidate whose prediction is
+    for its CURRENT inputs, using the SAME evidence-aware rule as the ranking run and the report
+    (ranking_evidence_rules.evidence_ranking) applied to the STORED predictions, so a page refresh shows
+    exactly what the run reported.
+
+    * ranking_status / ranking_statement say how well the historical data supports ranking the candidate
+      (ranked / ranked_with_caution / not_ranked_insufficient_evidence). They are shown whenever a prediction
+      for the current inputs exists, so an extrapolation is never hidden.
+    * rank is a position (1 = best) only for a candidate the evidence supports, and only while the ranking
+      still covers the candidates as they are now. A candidate outside the observed range has rank None;
+      after an edit or a change of the candidate set no position is shown at all until the ranking is re-run.
+    * A candidate removed from the analysis, or whose prediction is for previous input values, gets neither.
+    The list itself stays in candidate-id order."""
     for c in candidates:
         c["rank"] = None
-    ranked = [
+        c["ranking_status"] = None
+        c["ranking_statement"] = None
+    current = [
         c for c in candidates
-        if c.get("latest_prediction") and not c.get("prediction_inputs_stale")
-        and not c.get("ranking_outdated") and not c.get("archived")
+        if c.get("latest_prediction") and not c.get("prediction_inputs_stale") and not c.get("archived")
     ]
-    if not ranked:
+    if not current:
         return
-    direction = (spec or {}).get("direction", "maximize")
-    ranked.sort(key=lambda c: ranking_sort_key(
-        c["latest_prediction"]["predicted_probability"], c["latest_prediction"].get("predicted_value"),
-        c["id"], direction,
-    ))
-    for position, c in enumerate(ranked, start=1):
-        c["rank"] = position
+    verdicts = ranking_evidence_rules.evidence_ranking(
+        [{"id": c["id"], "predicted_probability": c["latest_prediction"]["predicted_probability"],
+          "predicted_value": c["latest_prediction"].get("predicted_value"),
+          "decision_support": c.get("decision_support")} for c in current],
+        (spec or {}).get("direction", "maximize"),
+    )["by_id"]
+    for c in current:
+        verdict = verdicts[c["id"]]
+        c["ranking_status"] = verdict["status"]
+        c["ranking_statement"] = verdict["statement"]
+        c["rank"] = None if c.get("ranking_outdated") else verdict["rank"]
 
 
 def _check_entitled(organization_id: int) -> None:
@@ -521,13 +533,28 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
 
     # Everything is computed first and saved afterwards, in ONE transaction
     # (candidate_repo.persist_ranking): a failure anywhere leaves no partial ranking.
+    #
+    # Positions are decided by the evidence-aware rule (ranking_evidence_rules): only candidates whose inputs
+    # the historical data supports are ordered against each other. A candidate clearly outside the observed
+    # range keeps the model's own numbers -- unchanged -- but gets NO position (neither first nor last).
+    prepared = {}
+    for r in ranked:
+        domain_coverage = change_case_rules.classify_candidate_domain_coverage(r["features"], historical_ranges)
+        prepared[r["id"]] = (domain_coverage, change_case_rules.derive_decision_support(domain_coverage, has_prediction=True))  # C1
+    evidence = ranking_evidence_rules.evidence_ranking(
+        [{"id": r["id"], "predicted_probability": r["predicted_probability"],
+          "predicted_value": r["predicted_value"], "decision_support": prepared[r["id"]][1]} for r in ranked],
+        direction,
+    )
+    by_id = {r["id"]: r for r in ranked}
     results = []
     to_persist = []
-    for position, r in enumerate(ranked, start=1):
-        candidate_id = r["id"]
-        domain_coverage = change_case_rules.classify_candidate_domain_coverage(r["features"], historical_ranges)
-        decision_support = change_case_rules.derive_decision_support(domain_coverage, has_prediction=True)  # C1
-        experiment_description = _minimum_experiment_description(r, target_value, direction, domain_coverage)
+    for candidate_id in evidence["order"]:
+        r = by_id[candidate_id]
+        domain_coverage, decision_support = prepared[candidate_id]
+        verdict = evidence["by_id"][candidate_id]
+        experiment_description = _minimum_experiment_description(
+            r, target_value, direction, domain_coverage, ranking_status=verdict["status"])
         to_persist.append({
             "candidate_id": candidate_id,
             "inputs_version": versions_read[candidate_id],
@@ -539,7 +566,10 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
             "priority": 1,
         })
         results.append({
-            "rank": position,
+            "rank": verdict["rank"],  # None = not ranked (insufficient evidence); never first, never last
+            "ranking_status": verdict["status"],
+            "ranking_statement": verdict["statement"],
+            "ranking_summary": evidence["summary"],
             "candidate_id": candidate_id,
             "candidate_name": r["name"],
             "predicted_value": r["predicted_value"],
@@ -569,7 +599,7 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
 
 
 def _minimum_experiment_description(ranked_candidate: dict, target_value: float, direction: str,
-                                     domain_coverage: dict = None) -> str:
+                                     domain_coverage: dict = None, ranking_status: str = None) -> str:
     """A simple, honest, rule-based minimum-validation-experiment
     description -- deliberately NOT sophisticated active-learning
     experiment design in this phase (that's flagged as a known,
@@ -577,19 +607,31 @@ def _minimum_experiment_description(ranked_candidate: dict, target_value: float,
     the recommended NEXT physical validation step, not a claim that
     physical qualification itself is complete or fast."""
     prob = ranked_candidate["predicted_probability"]
-    if prob >= 0.8:
-        confidence_note = "high model-estimated probability"
-    elif prob >= 0.4:
-        confidence_note = "moderate model-estimated probability -- validation is important before relying on this candidate"
+    if ranking_status == ranking_evidence_rules.STATUS_NOT_RANKED:
+        # The historical data does not cover this candidate, so the model's number says nothing reliable about
+        # it in EITHER direction: no "test this first" and no "not worth testing" -- only that physical
+        # validation is what can settle it.
+        description = (
+            f"Run a physical qualification test against the target spec for '{ranked_candidate['name']}'. "
+            f"The historical data does not cover this candidate's inputs, so the model cannot say whether it is "
+            f"likely to meet the requirement: its estimate ({prob:.0%}) is an extrapolation and is not used to "
+            f"rank it or to rule it in or out. Only physical validation can establish how it performs -- this "
+            f"analysis does not replace running and recording the actual physical result."
+        )
     else:
-        confidence_note = "low model-estimated probability -- likely not worth physical validation unless no better candidate exists"
-    description = (
-        f"Run a physical qualification test against the target spec for "
-        f"'{ranked_candidate['name']}' ({confidence_note}; model estimate "
-        f"{prob:.0%}). This analysis identifies which "
-        f"candidate to test first -- it does not replace running and "
-        f"recording the actual physical result."
-    )
+        if prob >= 0.8:
+            confidence_note = "high model-estimated probability"
+        elif prob >= 0.4:
+            confidence_note = "moderate model-estimated probability -- validation is important before relying on this candidate"
+        else:
+            confidence_note = "low model-estimated probability -- likely not worth physical validation unless no better candidate exists"
+        description = (
+            f"Run a physical qualification test against the target spec for "
+            f"'{ranked_candidate['name']}' ({confidence_note}; model estimate "
+            f"{prob:.0%}). This analysis identifies which "
+            f"candidate to test first -- it does not replace running and "
+            f"recording the actual physical result."
+        )
     if domain_coverage and domain_coverage["status"] != change_case_rules.DOMAIN_WITHIN:
         flagged = ", ".join(
             col for col, f in domain_coverage["features"].items()
@@ -669,21 +711,38 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
             model_quality, uncertainty_calibration = _compute_evidence_metrics(spec, experiments)
 
     rec_spec = json.loads(case["qualification_spec_json"])
+    current = [
+        c for c in candidates
+        if c.get("latest_prediction") and not c.get("prediction_inputs_stale")
+    ]
+    # Same evidence-aware rule as the ranking run and the candidate listing, so the table can never show a
+    # different order -- or rank a candidate the historical data does not support ranking.
+    evidence = ranking_evidence_rules.evidence_ranking(
+        [{"id": c["id"], "predicted_probability": c["latest_prediction"]["predicted_probability"],
+          "predicted_value": c["latest_prediction"].get("predicted_value"),
+          "decision_support": c.get("decision_support")} for c in current],
+        rec_spec["direction"],
+    )
+    by_id = {c["id"]: c for c in current}
     ranked_results = []
-    for c in candidates:
-        pred = c.get("latest_prediction")
-        if pred is None or c.get("prediction_inputs_stale"):
-            continue
-        # The recommendation text is built from THIS candidate's latest prediction and the domain
-        # coverage shown beside it, by the same function that wrote the stored recommendation when
-        # the ranking ran -- so it can never quote a different ranking than the table it sits under.
+    for candidate_id in evidence["order"]:  # ranked first (best first), then the unranked by id
+        c = by_id[candidate_id]
+        pred = c["latest_prediction"]
+        verdict = evidence["by_id"][candidate_id]
+        # The recommendation text is built from THIS candidate's latest prediction and the domain coverage
+        # shown beside it, by the same function that wrote the stored recommendation when the ranking ran --
+        # so it can never quote a different ranking than the table it sits under.
         # (It used to read the stored recommendations and take the OLDEST: every ranking run stores
         # a new one with the same priority, and that listing is ordered by id ASC.)
         description = _minimum_experiment_description(
             {"name": c["candidate_name"], "predicted_probability": pred["predicted_probability"]},
             rec_spec["target_value"], rec_spec["direction"], c.get("domain_coverage"),
+            ranking_status=verdict["status"],
         )
         ranked_results.append({
+            "rank": verdict["rank"],  # None = not ranked (insufficient evidence)
+            "ranking_status": verdict["status"],
+            "ranking_statement": verdict["statement"],
             "candidate_id": c["id"],
             "candidate_name": c["candidate_name"],
             "predicted_value": pred.get("predicted_value"),  # None = not recorded for this (older) prediction
@@ -693,12 +752,6 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
             "domain_coverage": c.get("domain_coverage"),
             "decision_support": c.get("decision_support"),  # C1
         })
-    # Same ordering rule as the ranking run and the candidate listing (never by name).
-    ranked_results.sort(key=lambda r: ranking_sort_key(
-        r["predicted_probability"], r["predicted_value"], r["candidate_id"], rec_spec["direction"],
-    ))
-    for position, r in enumerate(ranked_results, start=1):
-        r["rank"] = position
 
     audit_context = _build_report_audit_context(
         organization_id, change_case_id, case, candidates, dataset,

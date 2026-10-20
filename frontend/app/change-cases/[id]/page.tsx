@@ -132,6 +132,11 @@ export default function ChangeCaseDetailPage() {
   const canEditCandidates = changeCase !== null && !archivedCase && !completedCase;
   // The order is out of date (candidates were added/removed/restored/edited since the ranking ran): one banner.
   const orderNotice = activeCandidates.find((c) => c.ranking_outdated)?.ranking_notice ?? null;
+  // Candidates with a current prediction that the historical data does not support ranking: no position is shown
+  // for them, so say why (and, if that is every candidate, say that nothing could be ranked).
+  const NOT_RANKED = "not_ranked_insufficient_evidence";
+  const withEvidenceStatus = activeCandidates.filter((c) => c.ranking_status);
+  const nobodyRankable = withEvidenceStatus.length > 0 && withEvidenceStatus.every((c) => c.ranking_status === NOT_RANKED);
   const needsRerank = activeCandidates.some((c) => c.prediction_stale || c.prediction_inputs_stale || c.ranking_outdated);
   const targetUnit = spec?.units?.[spec.target_metric];
   const staleNotices = Array.from(
@@ -420,6 +425,14 @@ export default function ChangeCaseDetailPage() {
               <strong>Stale ranking.</strong> {n}
             </div>
           ))}
+          {nobodyRankable && (
+            <div role="alert" style={NOTICE_STYLE}>
+              <strong>No candidate could be ranked.</strong> Every candidate lies outside the range the historical data
+              covers, so no ordering is supported by evidence. The model&apos;s estimates are shown for information only;
+              physical validation, or historical data covering these inputs, is needed before candidates can be compared.
+              Not being ranked does not mean a candidate is unsuitable.
+            </div>
+          )}
           {orderNotice && (
             <div role="alert" style={NOTICE_STYLE}>
               <strong>Ranking out of date.</strong> {orderNotice}
@@ -436,6 +449,8 @@ export default function ChangeCaseDetailPage() {
                   <div style={{ fontSize: "var(--text-sm)", fontWeight: 500, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                     {c.rank != null && <span style={{ color: "var(--color-text-tertiary)" }}>#{c.rank}</span>}
                     <span>{c.candidate_name}</span>
+                    {c.ranking_status === NOT_RANKED && <Badge tone="warning">Not ranked: outside the historical evidence</Badge>}
+                    {c.ranking_status === "ranked_with_caution" && <Badge tone="warning">Provisional rank</Badge>}
                     {removed && <Badge tone="neutral">Removed from analysis</Badge>}
                   </div>
                   <div style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)" }}>
@@ -465,7 +480,8 @@ export default function ChangeCaseDetailPage() {
                       {staleInputs && <div style={{ marginBottom: 4 }}><Badge tone="danger">PREVIOUS INPUTS</Badge></div>}
                       {c.prediction_stale && <div style={{ marginBottom: 4 }}><Badge tone="danger">STALE</Badge></div>}
                       <Badge tone={staleInputs ? "neutral" : decisionTone(c.decision_support)}>
-                        Model estimate {Math.round(c.latest_prediction.predicted_probability * 100)}%
+                        Model estimate{c.ranking_status === NOT_RANKED ? " (extrapolation)" : ""}{" "}
+                        {Math.round(c.latest_prediction.predicted_probability * 100)}%
                       </Badge>
                       <div style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)", marginTop: 4 }}>
                         uncertainty (std): {c.latest_prediction.uncertainty_std.toFixed(1)}{targetUnit ? ` ${targetUnit}` : ""}
@@ -490,6 +506,11 @@ export default function ChangeCaseDetailPage() {
                   )}
                 </div>
               </div>
+              {(c.ranking_status === NOT_RANKED || c.ranking_status === "ranked_with_caution") && c.ranking_statement && (
+                <div role="note" style={NOTICE_STYLE}>
+                  <strong>{c.ranking_status === NOT_RANKED ? "Not ranked." : "Provisional rank."}</strong> {c.ranking_statement}
+                </div>
+              )}
               {staleInputs && c.ranking_notice && (
                 <div role="alert" style={NOTICE_STYLE}>
                   <strong>Prediction is for previous input values.</strong> {c.ranking_notice}

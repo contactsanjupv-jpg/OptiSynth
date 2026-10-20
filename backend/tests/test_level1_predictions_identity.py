@@ -182,7 +182,8 @@ class TestReportCarriesTheSameResults(Level1Base):
         self.assertIn("Evidence intake review", text)         # data provenance
         self.assertIn("history.csv", text)
         self.assertIn("Recommended Validation Experiments", text)
-        self.assertIn("equal probability are ordered by predicted value", text)
+        self.assertIn("equal probability are ordered by evidence support", text)
+        self.assertIn("then by predicted value in the requirement's favorable direction", text)
 
     def test_docx_rank_order_matches_the_ranking_response_and_the_listing(self):
         from docx import Document

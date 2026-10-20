@@ -21,7 +21,11 @@ config = context.config
 # settings module (which reads DATABASE_URL from the environment/.env),
 # NOT a hardcoded value in alembic.ini. This mirrors the discipline
 # already documented in backend/app/config/database.py.
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Alembic's config is a ConfigParser, where "%" starts an interpolation. A real DATABASE_URL routinely
+# contains one -- special characters in a password must be percent-encoded (p@ss -> p%40ss) -- and an
+# unescaped "%" aborts every migration with "invalid interpolation syntax". Doubling it is the
+# documented escape; reading the option back yields the original URL.
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

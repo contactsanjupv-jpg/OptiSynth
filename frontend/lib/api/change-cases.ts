@@ -323,6 +323,8 @@ export interface DecisionSupport {
   statement: string;
 }
 
+export type RankingStatus = "ranked" | "ranked_with_caution" | "not_ranked_insufficient_evidence";
+
 export interface Candidate {
   id: number;
   candidate_name: string;
@@ -348,6 +350,15 @@ export interface Candidate {
   /** 1 = best, by the same deterministic order the ranking run used. null until the candidate has a prediction,
    *  and withheld (null) whenever the ranking no longer covers the candidates as they are now. */
   rank?: number | null;
+  /**
+   * How well the historical data supports ranking this candidate (set whenever a prediction for its current
+   * input values exists). "not_ranked_insufficient_evidence" = an input lies outside the observed range (or its
+   * coverage is unknown): the candidate gets NO position -- neither first nor last -- and its model estimate is an
+   * extrapolation. That is the absence of evidence, not a verdict on the candidate.
+   */
+  ranking_status?: RankingStatus | null;
+  /** Ready-to-show explanation of ranking_status. */
+  ranking_statement?: string | null;
   /** Bumped every time the candidate's input values change. */
   inputs_version?: number;
   /**
@@ -431,6 +442,19 @@ export function deleteCandidate(changeCaseId: number, candidateId: number) {
 }
 
 export interface RankResult {
+  /** null = not ranked (insufficient evidence); never first, never last. */
+  rank: number | null;
+  ranking_status: RankingStatus;
+  ranking_statement: string;
+  /** Same on every result of one run. */
+  ranking_summary: {
+    candidates: number;
+    ranked: number;
+    ranked_with_caution: number;
+    not_ranked: number;
+    message: string;
+    ordering_rule: string;
+  };
   candidate_id: number;
   candidate_name: string;
   predicted_probability: number;

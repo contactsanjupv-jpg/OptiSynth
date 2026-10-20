@@ -62,10 +62,17 @@ class TestReportRecommendationsUseTheLatestRanking(IsolatedApiTestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         doc = Document(io.BytesIO(resp.content))
         # Columns are located by header text (the table also carries Rank and Predicted-value columns).
-        table = next(t for t in doc.tables if "Model-estimated probability" in [c.text for c in t.rows[0].cells])
-        headers = [c.text for c in table.rows[0].cells]
-        name_col, prob_col = headers.index("Candidate"), headers.index("Model-estimated probability")
-        ranked = {row.cells[name_col].text: row.cells[prob_col].text for row in table.rows[1:]}
+        # Candidates the historical data does not cover are not in the ranked table: their (unchanged) numbers
+        # are in the "Not ranked" table, whose probability header carries an "(extrapolation)" suffix.
+        ranked = {}
+        for table in doc.tables:
+            headers = [c.text for c in table.rows[0].cells]
+            prob_cols = [i for i, h in enumerate(headers) if h.startswith("Model-estimated probability")]
+            if not prob_cols or "Candidate" not in headers:
+                continue
+            name_col = headers.index("Candidate")
+            for row in table.rows[1:]:
+                ranked[row.cells[name_col].text] = row.cells[prob_cols[0]].text
         recs, on = {}, False
         for p in doc.paragraphs:
             if p.style.name.startswith("Heading"):
@@ -76,9 +83,10 @@ class TestReportRecommendationsUseTheLatestRanking(IsolatedApiTestCase):
         return ranked, recs
 
     def _estimate_in(self, text):
-        m = re.search(r"model estimate (\d+)%", text)
+        # ranked candidates: "... model estimate 85%)"; unranked (extrapolated) ones: "... its estimate (85%) is ..."
+        m = re.search(r"model estimate (\d+)%|its estimate \((\d+)%\)", text)
         self.assertIsNotNone(m, text)
-        return f"{m.group(1)}%"
+        return f"{m.group(1) or m.group(2)}%"
 
     # ------------------------------------------------------------------
     def test_the_two_rankings_really_differ_so_the_test_is_meaningful(self):
@@ -175,6 +183,9 @@ class TestReportRecommendationsUseTheLatestRanking(IsolatedApiTestCase):
         second = self._rank(client, case_id)
         _, recs = self._report(client, case_id)
         for name, r in second.items():
+            if r["ranking_status"] == "not_ranked_insufficient_evidence":
+                self.assertNotIn("model-estimated probability", recs[name].split("Domain caution")[0], name)  # no tier
+                continue
             p = r["predicted_probability"]
             tier = "high" if p >= 0.8 else "moderate" if p >= 0.4 else "low"
             self.assertIn(f"{tier} model-estimated probability", recs[name], name)

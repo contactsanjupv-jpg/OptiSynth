@@ -12,6 +12,8 @@ from docx import Document
 from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+from backend.app.services import ranking_evidence_rules as evidence_rules
+
 REPORTS_ROOT = os.path.join(os.path.dirname(__file__), "..", "..", "..", "reports", "generated")
 
 
@@ -101,9 +103,16 @@ DECISION_SUPPORT_EXPLANATION = (
     "mean qualified: physical validation is required for every candidate."
 )
 
-RANKING_ORDER_NOTE = (
-    "Candidates are ordered by model-estimated probability. Candidates with equal probability are "
-    "ordered by predicted value in the requirement's favorable direction, then by candidate ID."
+RANKING_ORDER_NOTE = evidence_rules.ORDERING_RULE
+UNRANKED_INTRO = (
+    "The historical data does not cover the inputs of the candidates below, so the model's figures for them "
+    "are extrapolations. They are shown unchanged and for information only. These candidates are not ranked: "
+    "a position, high or low, would claim more than the evidence supports. This analysis does not judge any "
+    "of them unsuitable. Each needs physical validation before it can be compared with the ranked candidates."
+)
+UNRANKED_UNCERTAINTY_NOTE = (
+    "The uncertainty shown is the model's own spread. Outside the range the historical data covers it is not "
+    "a reliable measure of error, so these candidates may differ from the estimates by much more than it suggests."
 )
 PREDICTED_VALUE_MISSING_NOTE = (
     "'Not recorded' means the stored ranking for that candidate was produced before predicted "
@@ -361,6 +370,13 @@ def _evidence_gaps(ranked_results, ctx):
                     f"{r['candidate_name']}: no historical evidence at {col} = {f['value']} "
                     f"(observed {f['historical_min']} to {f['historical_max']}); the estimate is an extrapolation."
                 )
+    for r in ranked_results:
+        if r.get("ranking_status") == evidence_rules.STATUS_NOT_RANKED:
+            gaps.append(
+                f"{r['candidate_name']}: not ranked -- the historical evidence does not cover its inputs, so no "
+                "position is given and its model estimate is an extrapolation. Physical validation is required "
+                "before it can be compared with other candidates."
+            )
     unranked = [c["candidate_name"] for c in ctx.get("candidates", []) if not c.get("has_prediction")]
     if unranked:
         gaps.append("Not yet ranked: " + ", ".join(unranked) + ".")
@@ -425,6 +441,40 @@ def _add_human_decision_block(doc):
     ])
 
 
+def _add_unranked_section(doc, unranked_results, spec, target_unit, unit_phrase):
+    """Candidates the historical data does not support ranking: the model's own numbers, unchanged, labelled
+    as extrapolation, with no position."""
+    doc.add_heading("Not ranked: outside the historical evidence", level=2)
+    doc.add_paragraph(UNRANKED_INTRO)
+    metric = spec["target_metric"] if spec else "value"
+    headers = [
+        "Candidate",
+        f"Predicted {metric}{unit_phrase} (extrapolation, not a measured result)",
+        "Model-estimated probability (extrapolation)",
+        f"Uncertainty (std{', ' + target_unit if target_unit else ''})",
+        "Historical data coverage",
+        "Decision support",
+    ]
+    table = doc.add_table(rows=1, cols=len(headers))
+    table.style = "Light Grid Accent 1"
+    for cell, text in zip(table.rows[0].cells, headers):
+        cell.text = text
+    for r in unranked_results:
+        cov = r.get("domain_coverage")
+        ds = r.get("decision_support")
+        values = [
+            r["candidate_name"],
+            "Not recorded" if r.get("predicted_value") is None else format_predicted_value(r["predicted_value"]),
+            f"{r['predicted_probability']:.0%}",
+            f"{r['uncertainty_std']:.3f}",
+            DOMAIN_COVERAGE_LABELS[cov["status"]] if cov else "Not assessed",
+            ds["label"] if ds else "Not assessed",
+        ]
+        for cell, text in zip(table.add_row().cells, values):
+            cell.text = text
+    doc.add_paragraph(UNRANKED_UNCERTAINTY_NOTE).runs[0].font.size = Pt(9)
+
+
 def build_qualification_report(change_case: dict, ranked_results: list, n_historical_rows: int,
                                 organization_name: str, data_quality: dict = None,
                                 model_quality: dict = None, uncertainty_calibration: dict = None,
@@ -459,21 +509,18 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
         _add_ingestion_review(doc, audit_context)
 
     doc.add_heading("Ranked Candidates", level=1)
+    # Only candidates the historical data supports are ranked. The rest (inputs outside the observed range)
+    # are disclosed in their own section: the model's numbers unchanged, labelled as extrapolation, no
+    # position (see ranking_evidence_rules). Results without a ranking_status are treated as ranked.
+    unranked_results = [r for r in ranked_results if r.get("ranking_status") == evidence_rules.STATUS_NOT_RANKED]
+    supported_results = [r for r in ranked_results if r.get("ranking_status") != evidence_rules.STATUS_NOT_RANKED]
     if not ranked_results:
         doc.add_paragraph("No candidates ranked yet.")
     else:
-        show_coverage = any(r.get("domain_coverage") for r in ranked_results)
-        # C1: the categorical decision-support column is shown whenever any
-        # result carries it (i.e. always for real ranked predictions).
-        show_decision = any(r.get("decision_support") for r in ranked_results)
-        # Predicted target-property value: shown whenever results carry the field at all. A
-        # missing value (prediction stored before values were recorded) is labelled, never blank
-        # and never filled in.
-        show_value = any("predicted_value" in r for r in ranked_results)
-        show_rank = any(r.get("rank") for r in ranked_results)
         spec = (audit_context or {}).get("spec")
         target_unit = ((spec.get("units") or {}).get(spec["target_metric"])) if spec else None
         unit_phrase = f" ({target_unit})" if target_unit else ""
+        summary = evidence_rules.summarize_statuses([r.get("ranking_status") for r in ranked_results])
 
         if spec:
             phrase = DIRECTION_PHRASE.get(spec.get("direction"), spec.get("direction", ""))
@@ -485,55 +532,76 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
                 + "Predicted values and uncertainties below are MODEL ESTIMATES, not measured physical results."
             )
 
-        headers = []
-        if show_rank:
-            headers.append("Rank")
-        headers.append("Candidate")
-        if show_value:
-            headers.append(f"Predicted {spec['target_metric']}{unit_phrase} (model estimate)" if spec
-                           else "Predicted value (model estimate)")
-        headers.append("Model-estimated probability")
-        headers.append(f"Uncertainty (std{', ' + target_unit if target_unit else ''})")
-        if show_coverage:
-            headers.append("Historical data coverage")
-        if show_decision:
-            headers.append("Decision support")
+        if not supported_results:
+            # Nobody is supported by the evidence: say so plainly instead of presenting an empty or invented order.
+            doc.add_paragraph(summary["message"])
+            doc.add_paragraph(MODEL_ESTIMATE_NOTE).runs[0].font.size = Pt(9)
+        else:
+            show_coverage = any(r.get("domain_coverage") for r in supported_results)
+            # C1: the categorical decision-support column is shown whenever any
+            # result carries it (i.e. always for real ranked predictions).
+            show_decision = any(r.get("decision_support") for r in supported_results)
+            # Predicted target-property value: shown whenever results carry the field at all. A
+            # missing value (prediction stored before values were recorded) is labelled, never blank
+            # and never filled in.
+            show_value = any("predicted_value" in r for r in supported_results)
+            show_rank = any(r.get("rank") for r in supported_results)
 
-        table = doc.add_table(rows=1, cols=len(headers))
-        table.style = "Light Grid Accent 1"
-        for cell, text in zip(table.rows[0].cells, headers):
-            cell.text = text
-        any_value_missing = False
-        for r in ranked_results:
-            values = []
+            headers = []
             if show_rank:
-                values.append(str(r.get("rank", "")))
-            values.append(r["candidate_name"])
+                headers.append("Rank")
+            headers.append("Candidate")
             if show_value:
-                if r.get("predicted_value") is None:
-                    any_value_missing = True
-                    values.append("Not recorded")
-                else:
-                    values.append(format_predicted_value(r["predicted_value"]))
-            values.append(f"{r['predicted_probability']:.0%}")
-            values.append(f"{r['uncertainty_std']:.3f}")
+                headers.append(f"Predicted {spec['target_metric']}{unit_phrase} (model estimate)" if spec
+                               else "Predicted value (model estimate)")
+            headers.append("Model-estimated probability")
+            headers.append(f"Uncertainty (std{', ' + target_unit if target_unit else ''})")
             if show_coverage:
-                cov = r.get("domain_coverage")
-                values.append(DOMAIN_COVERAGE_LABELS[cov["status"]] if cov else "Not assessed")
+                headers.append("Historical data coverage")
             if show_decision:
-                ds = r.get("decision_support")
-                values.append(ds["label"] if ds else "Not assessed")
-            row = table.add_row().cells
-            for cell, text in zip(row, values):
-                cell.text = text
+                headers.append("Decision support")
 
-        doc.add_paragraph(MODEL_ESTIMATE_NOTE).runs[0].font.size = Pt(9)
-        if show_rank:
-            doc.add_paragraph(RANKING_ORDER_NOTE).runs[0].font.size = Pt(9)
-        if any_value_missing:
-            doc.add_paragraph(PREDICTED_VALUE_MISSING_NOTE).runs[0].font.size = Pt(9)
-        if show_decision:
-            doc.add_paragraph(DECISION_SUPPORT_EXPLANATION).runs[0].font.size = Pt(9)
+            table = doc.add_table(rows=1, cols=len(headers))
+            table.style = "Light Grid Accent 1"
+            for cell, text in zip(table.rows[0].cells, headers):
+                cell.text = text
+            any_value_missing = False
+            for r in supported_results:
+                values = []
+                if show_rank:
+                    values.append(str(r.get("rank", "")))
+                values.append(r["candidate_name"])
+                if show_value:
+                    if r.get("predicted_value") is None:
+                        any_value_missing = True
+                        values.append("Not recorded")
+                    else:
+                        values.append(format_predicted_value(r["predicted_value"]))
+                values.append(f"{r['predicted_probability']:.0%}")
+                values.append(f"{r['uncertainty_std']:.3f}")
+                if show_coverage:
+                    cov = r.get("domain_coverage")
+                    values.append(DOMAIN_COVERAGE_LABELS[cov["status"]] if cov else "Not assessed")
+                if show_decision:
+                    ds = r.get("decision_support")
+                    values.append(ds["label"] if ds else "Not assessed")
+                row = table.add_row().cells
+                for cell, text in zip(row, values):
+                    cell.text = text
+
+            doc.add_paragraph(MODEL_ESTIMATE_NOTE).runs[0].font.size = Pt(9)
+            if show_rank:
+                doc.add_paragraph(RANKING_ORDER_NOTE).runs[0].font.size = Pt(9)
+            if any_value_missing:
+                doc.add_paragraph(PREDICTED_VALUE_MISSING_NOTE).runs[0].font.size = Pt(9)
+            if show_decision:
+                doc.add_paragraph(DECISION_SUPPORT_EXPLANATION).runs[0].font.size = Pt(9)
+            if unranked_results or any(r.get("ranking_status") == evidence_rules.STATUS_RANKED_WITH_CAUTION
+                                       for r in supported_results):
+                doc.add_paragraph(summary["message"])
+
+        if unranked_results:
+            _add_unranked_section(doc, unranked_results, spec, target_unit, unit_phrase)
 
         doc.add_heading("Recommended Validation Experiments", level=1)
         for r in ranked_results:

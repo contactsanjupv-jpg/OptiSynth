@@ -3998,10 +3998,16 @@ class TestChangeCaseApi(unittest.TestCase):
         self.assertAlmostEqual(far["predicted_probability"], direct["predicted_probability"], places=9)
         self.assertAlmostEqual(far["uncertainty_std"], direct["uncertainty_std"], places=9)
 
-        # ranking order is still purely probability-descending: decision_support
-        # does not demote or re-order anything
-        probs = [x["predicted_probability"] for x in ranked]
+        # Domain-aware ranking: candidates the evidence supports are still ordered purely by probability, but
+        # the outside candidate -- whose raw output is reported unchanged (asserted above) -- gets NO position
+        # and is listed after them. (It used to take part in the order and could rank first.)
+        supported = [x for x in ranked if x["rank"] is not None]
+        probs = [x["predicted_probability"] for x in supported]
         self.assertEqual(probs, sorted(probs, reverse=True))
+        self.assertEqual([x["rank"] for x in supported], list(range(1, len(supported) + 1)))
+        self.assertIsNone(far["rank"])
+        self.assertEqual(far["ranking_status"], "not_ranked_insufficient_evidence")
+        self.assertEqual(ranked[-1]["candidate_name"], "Far")
 
         self.assertEqual(res["Resin A"]["decision_support"]["status"], "evidence_supported")
         self.assertEqual(res["Edge"]["decision_support"]["status"], "caution")
@@ -4063,6 +4069,13 @@ class TestChangeCaseApi(unittest.TestCase):
         # each candidate's actual probability, so the test does not depend on
         # the numeric level the installed numpy/scikit-learn happen to produce.
         for x in res.values():
+            if x["ranking_status"] == "not_ranked_insufficient_evidence":
+                # No tier for an extrapolated candidate: its number must not become "test this first" or
+                # "not worth testing" -- the model cannot say, in either direction.
+                for tier in ("high", "moderate", "low"):
+                    self.assertNotIn(f"{tier} model-estimated probability", x["recommended_experiment"])
+                self.assertIn("cannot say whether it is likely to meet the requirement", x["recommended_experiment"])
+                continue
             p = x["predicted_probability"]
             tier = "high" if p >= 0.8 else "moderate" if p >= 0.4 else "low"
             self.assertIn(f"{tier} model-estimated probability", x["recommended_experiment"], msg=x["candidate_name"])

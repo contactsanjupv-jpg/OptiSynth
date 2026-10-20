@@ -310,6 +310,11 @@ class CandidateResponse(BaseModel):
     ranking_notice: str | None = None
     # Stored values for fields this diagnostic does not model (legacy rows); never used by the model.
     ignored_properties: dict | None = None
+    # How well the historical data supports ranking this candidate (set whenever a prediction for its current
+    # input values exists): ranked | ranked_with_caution | not_ranked_insufficient_evidence, with a ready-to-show
+    # statement. A not-ranked candidate has rank None whatever else is true; its prediction is an extrapolation.
+    ranking_status: str | None = None
+    ranking_statement: str | None = None
     # Lifecycle: what depends on the candidate and what may be done with it.
     archived: bool = False
     archived_at: str | None = None
@@ -346,7 +351,14 @@ class RankResultResponse(BaseModel):
     # renaming a name already used consistently across the service/report.
     model_config = {"protected_namespaces": ()}
 
-    rank: int
+    # 1 = best. None = NOT RANKED: the historical data does not cover this candidate's inputs, so no position
+    # is given (neither first nor last) -- see ranking_status / ranking_statement. The model's own numbers
+    # below are still reported unchanged for such a candidate; they are an extrapolation.
+    rank: int | None
+    ranking_status: str | None = None  # ranked | ranked_with_caution | not_ranked_insufficient_evidence
+    ranking_statement: str | None = None
+    # Same dict on every result of one run: counts of ranked / provisional / not-ranked candidates and a message.
+    ranking_summary: dict | None = None
     candidate_id: int
     candidate_name: str
     # Model-predicted target-property value in the case's canonical target unit (an estimate, not a measurement).

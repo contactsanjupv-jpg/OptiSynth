@@ -28,7 +28,10 @@ from backend.tests import evidence_fixtures as F
 from backend.tests._api_base import IsolatedApiTestCase
 
 A_FEATURES = {"crosslinker_ratio": 0.145, "cure_temp_c": 170}
-B_FEATURES = {"crosslinker_ratio": 0.16, "cure_temp_c": 178}
+# Inside the synthetic history's observed range (crosslinker 0.080-0.145, cure temp 140-179 C). It used to be
+# (0.16, 178), which is OUTSIDE that range; candidates outside it are no longer given a rank (see
+# test_domain_aware_ranking.py), and these tests are about editing / removing candidates, not about that.
+B_FEATURES = {"crosslinker_ratio": 0.13, "cure_temp_c": 165}
 A_EDITED = {"crosslinker_ratio": 0.10, "cure_temp_c": 150}
 
 
