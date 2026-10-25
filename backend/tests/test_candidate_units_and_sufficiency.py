@@ -12,14 +12,14 @@ os.environ.setdefault("PASSWORD_PEPPER", "test-password-pepper-not-for-productio
 from backend.app.services import change_case_rules as R  # noqa: E402
 from backend.app.services import evidence_rules as ER  # noqa: E402
 from backend.tests import evidence_fixtures as F  # noqa: E402
-from backend.tests._api_base import SPEC, SPEC_U, IsolatedApiTestCase  # noqa: E402
+from backend.tests._api_base import SPEC, SPEC_NO_UNITS, SPEC_U, IsolatedApiTestCase  # noqa: E402
 
 SPEC_UNITS = {**SPEC, "units": {"cure_temp_c": "degC", "salt_spray_hours": "h"}}
 
 
 class TestConvertCandidateInputs(unittest.TestCase):
     def test_no_units_declared_and_none_given_is_unchanged(self):
-        out, rec, problems = ER.convert_candidate_inputs(SPEC, {"crosslinker_ratio": 0.1, "cure_temp_c": 150}, None)
+        out, rec, problems = ER.convert_candidate_inputs(SPEC_NO_UNITS, {"crosslinker_ratio": 0.1, "cure_temp_c": 150}, None)
         self.assertEqual((out, problems), ({"crosslinker_ratio": 0.1, "cure_temp_c": 150}, []))
 
     def test_unit_required_where_the_case_declares_one(self):
@@ -49,7 +49,7 @@ class TestConvertCandidateInputs(unittest.TestCase):
         self.assertIn("no canonical unit", problems[0])
 
     def test_unit_for_a_non_feature_is_refused(self):
-        _, _, problems = ER.convert_candidate_inputs(SPEC, {"crosslinker_ratio": 0.1, "cure_temp_c": 150}, {"colour": "red"})
+        _, _, problems = ER.convert_candidate_inputs(SPEC_NO_UNITS, {"crosslinker_ratio": 0.1, "cure_temp_c": 150}, {"colour": "red"})
         self.assertIn("not a feature", problems[0])
 
 
@@ -66,7 +66,7 @@ class TestAssessEvidenceSufficiency(unittest.TestCase):
         return [c["code"] for c in a["checks"] if c["status"] == status]
 
     def test_good_evidence_can_rank_and_every_check_is_explained(self):
-        a = R.assess_evidence_sufficiency(SPEC_UNITS, rows(12), [cand("A", 0.1, 150)], True, {"flags": []})
+        a = R.assess_evidence_sufficiency(SPEC, rows(12), [cand("A", 0.1, 150)], True, {"flags": []})
         self.assertTrue(a["can_rank"])
         self.assertEqual(a["blocking"], [])
         self.assertTrue(all(c["detail"] and c["title"] for c in a["checks"]))
@@ -83,7 +83,8 @@ class TestAssessEvidenceSufficiency(unittest.TestCase):
         self.assertEqual(a["summary"]["distinct_rows"], 6)
 
     def test_underdetermined_fit_is_blocked(self):
-        spec = {"feature_columns": [f"f{i}" for i in range(9)], "target_metric": "y", "target_value": 1, "direction": "maximize"}
+        spec = {"feature_columns": [f"f{i}" for i in range(9)], "target_metric": "y", "target_value": 1, "direction": "maximize",
+                "units": {**{f"f{i}": "dimensionless" for i in range(9)}, "y": "dimensionless"}}
         r = [{"features": {f"f{j}": (i + 1) * (j + 1) + j for j in range(9)}, "target_value": i} for i in range(9)]
         a = R.assess_evidence_sufficiency(spec, r, [{"candidate_name": "A", "properties": r[0]["features"]}], True, {"flags": []})
         self.assertEqual(self._codes(a, "fail"), ["ROWS_VS_FEATURES"])
@@ -115,13 +116,19 @@ class TestAssessEvidenceSufficiency(unittest.TestCase):
         self.assertIn("Far", w["detail"])
         self.assertNotIn("In,", w["detail"])
 
-    def test_legacy_dataset_and_undeclared_units_are_visible_warnings(self):
+    def test_a_legacy_dataset_is_a_warning_but_undeclared_units_now_block_ranking(self):
+        """Missing canonical units used to be a WARNING (and only when the dataset had an intake review record).
+        They now BLOCK, whether or not a review record exists."""
         legacy = R.assess_evidence_sufficiency(SPEC, rows(12), [cand("A")], True, None)
         self.assertIn("REVIEW_RECORD", self._codes(legacy, "warn"))
-        nounits = R.assess_evidence_sufficiency(SPEC, rows(12), [cand("A")], True, {"flags": []})
-        self.assertIn("UNITS_DECLARED", self._codes(nounits, "warn"))
+        self.assertTrue(legacy["can_rank"])  # units are declared; a missing intake record alone does not block
+        for review in ({"flags": []}, None):   # with and without an intake review record
+            nounits = R.assess_evidence_sufficiency(SPEC_NO_UNITS, rows(12), [cand("A")], True, review)
+            self.assertIn("UNITS_DECLARED", self._codes(nounits, "fail"))
+            self.assertFalse(nounits["can_rank"])
         declared = R.assess_evidence_sufficiency(SPEC_UNITS, rows(12), [cand("A")], True, {"flags": []})
-        self.assertIn("UNITS_DECLARED", self._codes(declared, "warn"))  # crosslinker_ratio still has no unit
+        self.assertIn("UNITS_DECLARED", self._codes(declared, "fail"))  # crosslinker_ratio still has no unit
+        self.assertFalse(declared["can_rank"])
         full = {**SPEC, "units": {"crosslinker_ratio": "wt%", "cure_temp_c": "degC", "salt_spray_hours": "h"}}
         self.assertEqual(self._codes(R.assess_evidence_sufficiency(full, rows(12), [cand("A")], True, {"flags": []}), "pass").count("UNITS_DECLARED"), 1)
 
@@ -130,7 +137,7 @@ class TestCandidateApi(IsolatedApiTestCase):
     dir_name = "_test_env_cand"
 
     def test_case_without_declared_units_behaves_exactly_as_before(self):
-        org_id, client, case_id = self.setup_case("NoUnits")
+        org_id, client, case_id = self.setup_case("NoUnits", SPEC_NO_UNITS)
         r = client.post(f"/api/change-cases/{case_id}/candidates",
                         json={"name": "A", "features": {"crosslinker_ratio": 0.1, "cure_temp_c": 150}})
         self.assertEqual(r.status_code, 201, r.text)
@@ -150,7 +157,7 @@ class TestCandidateApi(IsolatedApiTestCase):
     def test_a_refused_candidate_is_not_stored(self):
         _, client, case_id = self.setup_case("Refused", SPEC_U)
         r = client.post(f"/api/change-cases/{case_id}/candidates",
-                        json={"name": "A", "features": {"crosslinker_ratio": 0.1, "cure_temp_c": 160}})
+                        json={"name": "A", "features": {"crosslinker_ratio": 0.1, "cure_temp_c": 160}, "units": {}})
         self.assertEqual(r.status_code, 400)
         self.assertIn("a unit is required", r.json()["error"])
         self.assertEqual(client.get(f"/api/change-cases/{case_id}/candidates").json(), [])
@@ -177,28 +184,30 @@ class TestUnitsWordingSourceVersusCase(unittest.TestCase):
         return next(c for c in a["checks"] if c["code"] == "UNITS_DECLARED")
 
     def test_case_without_units_but_with_intake_units_says_both_things_distinctly(self):
-        chk = self._units_check(SPEC, self.REVIEW)
-        self.assertEqual(chk["status"], "warn")
-        self.assertEqual(chk["title"], "Case units not defined for every modelled field")
-        self.assertIn("The case defines no canonical unit for: crosslinker_ratio, cure_temp_c, salt_spray_hours.", chk["detail"])
+        chk = self._units_check(SPEC_NO_UNITS, self.REVIEW)
+        self.assertEqual(chk["status"], "fail")  # was "warn": missing canonical units now block ranking
+        self.assertEqual(chk["title"], "Case units missing for some modelled fields")
+        for field in ("crosslinker_ratio (input feature)", "cure_temp_c (input feature)", "salt_spray_hours (target)"):
+            self.assertIn(field + ": no unit declared", chk["detail"])
         self.assertIn("Units recorded at intake for the imported file (cure_temp_c = C; salt_spray_hours = h)", chk["detail"])
-        self.assertIn("not enforced by the case", chk["detail"])
-        self.assertIn("candidate inputs are not unit-checked or converted", chk["detail"])
+        self.assertIn("describe that file only", chk["detail"])
+        self.assertIn("never guessed", chk["detail"])
 
     def test_no_intake_units_means_no_intake_sentence(self):
         review = {"flags": [], "units": {c: {"canonical": None, "declared_source_unit": None, "source_units_seen": []}
                                          for c in ("crosslinker_ratio", "cure_temp_c", "salt_spray_hours")}}
-        chk = self._units_check(SPEC, review)
+        chk = self._units_check(SPEC_NO_UNITS, review)
         self.assertNotIn("Units recorded at intake", chk["detail"])
-        self.assertIn("The case defines no canonical unit", chk["detail"])
+        self.assertIn("no unit declared", chk["detail"])
 
     def test_warning_and_pass_titles_differ_and_neither_claims_units_are_declared(self):
         full = {**SPEC, "units": {"crosslinker_ratio": "1", "cure_temp_c": "degC", "salt_spray_hours": "h"}}
-        warn, ok = self._units_check(SPEC, self.REVIEW), self._units_check(full, self.REVIEW)
+        blocked, ok = self._units_check(SPEC_NO_UNITS, self.REVIEW), self._units_check(full, self.REVIEW)
         self.assertEqual(ok["status"], "pass")
-        self.assertEqual(ok["title"], "Case units defined for every modelled field")
-        self.assertNotEqual(warn["title"], ok["title"])
-        for chk in (warn, ok):
+        self.assertEqual(ok["title"], "Case units declared for every modelled field")
+        self.assertNotEqual(blocked["title"], ok["title"])
+        self.assertNotIn("declared for every", blocked["title"])  # a failing check never claims units are declared
+        for chk in (blocked, ok):
             self.assertNotIn("Units declared", chk["title"])
             self.assertNotIn("Units declared", chk["detail"])
 

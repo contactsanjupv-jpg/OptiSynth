@@ -14,11 +14,15 @@ import json
 import os
 import shutil
 import unittest
+
+from backend.tests._api_base import persist_legacy_ranking, unit_aware_client
 from contextlib import redirect_stdout
 
 SPEC = {"feature_columns": ["crosslinker_ratio", "cure_temp_c"], "target_metric": "salt_spray_hours",
         "target_value": 300.0, "direction": "maximize"}
 SPEC_H = {**SPEC, "units": {"salt_spray_hours": "h"}}
+FULL_UNITS = {"crosslinker_ratio": "fraction", "cure_temp_c": "degC", "salt_spray_hours": "h"}
+SPEC_FULL = {**SPEC, "units": FULL_UNITS}  # every field declared: the only kind of case that can be ranked
 CANON = ["crosslinker_ratio", "cure_temp_c", "salt_spray_hours"]
 
 
@@ -55,7 +59,7 @@ class TestEvidenceIntakeApi(unittest.TestCase):
         command.upgrade(cfg, "head")
         from fastapi.testclient import TestClient
         from backend.app.main import app
-        cls.client_factory = staticmethod(lambda: TestClient(app))
+        cls.client_factory = staticmethod(lambda: unit_aware_client(app))
         cls._n = 0
 
     @classmethod
@@ -84,6 +88,19 @@ class TestEvidenceIntakeApi(unittest.TestCase):
 
     def _setup(self, label, spec):
         org_id, client = self._org_and_client(label)
+        from backend.app.services.change_case_rules import units_declaration_problems
+        if units_declaration_problems(spec):
+            # The API no longer creates a diagnostic without every unit declared. These tests exercise the
+            # intake review for unitless / partly-unit diagnostics, which now exist only as LEGACY rows.
+            from sqlalchemy import text
+            from backend.app.config.database import db_connection
+            from backend.app.repositories import change_case_repo
+            with db_connection() as conn:
+                user_id = conn.execute(text("SELECT user_id FROM memberships WHERE organization_id = :o LIMIT 1"),
+                                       {"o": org_id}).scalar()
+            case_id = change_case_repo.create_change_case(org_id, user_id, "case", "regulatory_restriction",
+                                                          "PFHxA", json.dumps(spec))
+            return org_id, client, case_id
         return org_id, client, self._case(client, spec)
 
     def _upload(self, client, case_id, text, options=None, preview=False, raw=None):
@@ -190,7 +207,7 @@ class TestEvidenceIntakeApi(unittest.TestCase):
     def test_07_missing_units_rejected_when_required_and_resolvable_by_declaration(self):
         org_id, client, case_id = self._setup("Missing", SPEC_H)
         text = make_csv(CANON, base_rows())
-        self._assert_rejected_and_nothing_stored(org_id, case_id, self._upload(client, case_id, text), "UNIT_MISSING")
+        self._assert_rejected_and_nothing_stored(org_id, case_id, self._upload(client, case_id, text, options={"declared_units": {}}), "UNIT_MISSING")
         ok = self._upload(client, case_id, text, options={"declared_units": {"salt_spray_hours": "h"}})
         self.assertEqual(ok.status_code, 201, ok.text)
         review = json.loads(self._datasets(org_id, case_id)[0]["review_json"])
@@ -288,11 +305,11 @@ class TestEvidenceIntakeApi(unittest.TestCase):
 
     # ------------------------------------------- 14. out-of-domain candidates + full path
     def test_14_out_of_domain_candidate_end_to_end_with_review_in_report(self):
-        org_id, client, case_id = self._setup("Domain", SPEC_H)
+        org_id, client, case_id = self._setup("Domain", SPEC_FULL)
         rows = [(a, b, f"{c} h") for a, b, c in base_rows(15)]
         text = make_csv(CANON, rows)
         raw = text.encode("utf-8")
-        up = self._upload(client, case_id, "", raw=raw, options={"declared_units": {}})
+        up = self._upload(client, case_id, "", raw=raw, options={"declared_units": FULL_UNITS})
         self.assertEqual(up.status_code, 201, up.text)
         client.post(f"/api/change-cases/{case_id}/candidates", json={"name": "Inside", "features": {"crosslinker_ratio": 0.12, "cure_temp_c": 160}})
         client.post(f"/api/change-cases/{case_id}/candidates", json={"name": "Outside", "features": {"crosslinker_ratio": 0.5, "cure_temp_c": 300}})
@@ -307,7 +324,9 @@ class TestEvidenceIntakeApi(unittest.TestCase):
         self.assertIn("Evidence intake review", text_doc)
         self.assertIn(hashlib.sha256(raw).hexdigest(), text_doc)
         self.assertIn("Requires validation", text_doc)
-        self.assertIn("No unit is recorded for: crosslinker_ratio, cure_temp_c", text_doc)
+        # every field now has a declared unit (a ranking requires it), so the report says units are recorded;
+        # the "no unit recorded" wording is only reachable for legacy rankings (see the legacy tests below)
+        self.assertIn("Units are recorded for every modelled column", text_doc)
         self.assertNotIn("Units of measure and test conditions are not recorded or verified", text_doc)
 
     # ------------------------------------------- report honesty for legacy / unreviewed paths
@@ -316,7 +335,10 @@ class TestEvidenceIntakeApi(unittest.TestCase):
         self.assertEqual(self._upload(client, case_id, make_csv(CANON, base_rows(15))).status_code, 201)
         client.post(f"/api/change-cases/{case_id}/candidates", json={"name": "A", "features": {"crosslinker_ratio": 0.12, "cure_temp_c": 160}})
         self._paid(org_id)
-        self.assertEqual(client.post(f"/api/change-cases/{case_id}/rank").status_code, 200)
+        # A diagnostic with no declared units can no longer be ranked, so its report is exercised as a LEGACY one:
+        # the ranking is stored directly, as it would have been before units were required.
+        self.assertEqual(client.post(f"/api/change-cases/{case_id}/rank").status_code, 400)
+        persist_legacy_ranking(org_id, case_id)
         t = self._docx_text(client.post(f"/api/change-cases/{case_id}/report").content)
         self.assertIn("Evidence intake review", t)
         self.assertIn("UNITS_NOT_DECLARED", t)
@@ -339,7 +361,10 @@ class TestEvidenceIntakeApi(unittest.TestCase):
         self.assertEqual(up.status_code, 201, up.text)
         client.post(f"/api/change-cases/{case_id}/candidates", json={"name": "A", "features": {"crosslinker_ratio": 0.12, "cure_temp_c": 160}})
         self._paid(org_id)
-        self.assertEqual(client.post(f"/api/change-cases/{case_id}/rank").status_code, 200)
+        # (Only the target has a declared unit, so the API refuses to rank; this test is about how the intake review
+        # appears in the report, so the ranking is stored directly as a legacy one.)
+        self.assertEqual(client.post(f"/api/change-cases/{case_id}/rank").status_code, 400)
+        persist_legacy_ranking(org_id, case_id)
         t = self._docx_text(client.post(f"/api/change-cases/{case_id}/report").content)
         for needle in ("Reviewer-confirmed mapping", "Salt Spray (h)", "1 row(s) day -> h", "Test Temp",
                        "Reference condition set used: Test Temp=25", "Report 9 p.2 superseded by customer",

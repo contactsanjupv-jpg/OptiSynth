@@ -449,6 +449,56 @@ def validate_options(options):
     return clean, flags
 
 
+# The three EXPLICIT ways to declare a quantity with no physical unit. They are distinct units: a value in
+# 'fraction' (0-1) is never silently read as '%' (0-100) or as 'dimensionless', and nothing here converts between them.
+DIMENSIONLESS_UNITS = {
+    "dimensionless": "a pure number",
+    "fraction": "a ratio expressed between 0 and 1",
+    "%": "a percentage (0-100)",
+}
+# Spellings people use for those quantities that do NOT say which of the three is meant (or only differ by letter
+# case from one of them). They are refused at declaration time instead of being mapped to one of the three.
+AMBIGUOUS_DIMENSIONLESS_SPELLINGS = {"ratio", "percent", "percentage", "pct", "unitless", "none", "n/a", "na", "-"}
+
+
+def unit_kind(unit):
+    """'supported' (in the exact-conversion table), 'dimensionless' (one of DIMENSIONLESS_UNITS, spelled exactly),
+    or 'custom' (any other explicit label). A custom label is matched by EXACT spelling only: it is not
+    dimensionally validated and never converted."""
+    stripped = str(unit or "").strip()
+    if stripped in DIMENSIONLESS_UNITS:
+        return "dimensionless"
+    if _lookup_unit(normalize_unit(stripped)) is not None:
+        return "supported"
+    return "custom"
+
+
+def ambiguous_dimensionless_hint(unit):
+    """A message when `unit` is an ambiguous way of writing a dimensionless quantity, else None."""
+    stripped = str(unit or "").strip()
+    lowered = stripped.lower()
+    if stripped in DIMENSIONLESS_UNITS:
+        return None
+    if lowered in DIMENSIONLESS_UNITS:
+        return f"{stripped!r} differs from {lowered!r} only by letter case; declare {lowered!r} exactly"
+    if lowered in AMBIGUOUS_DIMENSIONLESS_SPELLINGS:
+        return (f"{stripped!r} does not say whether the values are a pure number, a fraction (0-1) or a percentage "
+                "(0-100); declare 'dimensionless', 'fraction' or '%'")
+    return None
+
+
+def custom_unit_notes(spec):
+    """One plain sentence per declared unit that is neither supported nor one of the explicit dimensionless units."""
+    notes = []
+    for field, unit in (spec.get("units") or {}).items():
+        if unit_kind(unit) == "custom":
+            notes.append(
+                f"{field}: {str(unit).strip()!r} is a custom unit label. It is matched by exact symbol only (letter case matters, spacing is ignored) -- it "
+                "has not been checked dimensionally and values are never converted to or from it."
+            )
+    return notes
+
+
 def validate_spec_extensions(spec):
     """Checks the OPTIONAL spec keys this module adds ('units'). Returns an
     error message or None. Absent keys are always fine (back-compatible)."""

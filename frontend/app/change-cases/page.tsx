@@ -57,6 +57,22 @@ const FIELD_STYLE: React.CSSProperties = {
 };
 const LABEL_STYLE: React.CSSProperties = { fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" };
 
+// Spellings that do not say whether a quantity is a pure number, a fraction (0-1) or a percentage (0-100). The server
+// refuses them too (it is authoritative); this only saves a round trip.
+const AMBIGUOUS_UNIT_SPELLINGS = ["ratio", "percent", "percentage", "pct", "unitless", "none", "n/a", "na", "-"];
+const DIMENSIONLESS_UNITS = ["dimensionless", "fraction", "%"];
+const UNIT_SUGGESTIONS = ["degC", "h", "mm", "mPa.s", "dimensionless", "fraction", "%"];
+
+function unitProblem(unit: string): string | null {
+  const u = unit.trim();
+  if (!u) return "needs a unit";
+  const lower = u.toLowerCase();
+  if (!DIMENSIONLESS_UNITS.includes(u) && (DIMENSIONLESS_UNITS.includes(lower) || AMBIGUOUS_UNIT_SPELLINGS.includes(lower))) {
+    return `"${u}" does not say whether the values are a pure number, a fraction (0-1) or a percentage (0-100) -- enter dimensionless, fraction or %`;
+  }
+  return null;
+}
+
 export default function ChangeCasesPage() {
   const { checking } = useRequireAuth();
   const [cases, setCases] = useState<ChangeCase[] | null>(null);
@@ -175,19 +191,30 @@ export default function ChangeCasesPage() {
         setError("Each input feature and the target need a different name.");
         return;
       }
+      // Every modelled field and the target needs an explicit unit, and units cannot be edited after the diagnostic is
+      // created. The server refuses anything less (and is the authority); this catches it before sending.
+      const unitProblems = [
+        ...rows.map((r) => ({ field: r.name, problem: unitProblem(r.unit) })),
+        { field: targetMetric.trim(), problem: unitProblem(targetUnit) },
+      ].filter((p) => p.problem);
+      if (unitProblems.length > 0) {
+        setError(`Every field needs an explicit unit: ${unitProblems.map((p) => `${p.field} ${p.problem}`).join("; ")}.`);
+        return;
+      }
       const units: Record<string, string> = {};
-      rows.forEach((r) => { if (r.unit) units[r.name] = r.unit; });
-      if (targetUnit.trim()) units[targetMetric.trim()] = targetUnit.trim();
-      await createChangeCase(name, triggerType, restrictedSubstance || null, {
+      rows.forEach((r) => { units[r.name] = r.unit; });
+      units[targetMetric.trim()] = targetUnit.trim();
+      const created = await createChangeCase(name, triggerType, restrictedSubstance || null, {
         feature_columns: rows.map((r) => r.name),
         target_metric: targetMetric.trim(),
         target_value: parseFloat(targetValue),
         direction,
-        ...(Object.keys(units).length ? { units } : {}),
+        units,
       });
       setName(""); setRestrictedSubstance(""); setFeatures([{ name: "", unit: "" }]);
       setTargetMetric(""); setTargetUnit(""); setTargetValue("");
       setShowForm(false);
+      if (created.unit_notes && created.unit_notes.length > 0) setNotice(created.unit_notes.join(" "));
       load();
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : "Could not create change case.");
@@ -239,8 +266,12 @@ export default function ChangeCasesPage() {
               <p style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)", margin: 0 }}>
                 One diagnostic covers ONE qualification requirement. Define the fields the analysis uses below;
                 your own spreadsheet or report headers are matched to these in the evidence review, so they do
-                not have to be identical. Give every field a unit (leave it blank only for dimensionless values) --
-                values are converted only where an exact conversion exists, and are never guessed.
+                not have to be identical. Every field and the target needs an explicit unit, and units cannot be changed
+                after the diagnostic is created. Use the real unit (degC, h, mm ...), or say so explicitly:{" "}
+                <strong>dimensionless</strong> for a pure number, <strong>fraction</strong> for a ratio between 0 and 1,
+                <strong> %</strong> for a percentage -- these are different units and are never converted into each
+                other. Any other label you type is a custom unit: it is matched by exact symbol only (letter case matters, spacing is ignored) and is not
+                checked dimensionally. Values are converted only where an exact conversion exists, and are never guessed.
               </p>
               <div>
                 <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>
@@ -252,7 +283,7 @@ export default function ChangeCasesPage() {
                       onChange={(e) => setFeatures((fs) => fs.map((x, k) => (k === i ? { ...x, name: e.target.value } : x)))}
                       placeholder="e.g. cure_temp_c"
                       style={{ flex: 2, padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)" }} />
-                    <input value={f.unit} aria-label={`Feature ${i + 1} unit`}
+                    <input required list="unit-suggestions" value={f.unit} aria-label={`Feature ${i + 1} unit`}
                       onChange={(e) => setFeatures((fs) => fs.map((x, k) => (k === i ? { ...x, unit: e.target.value } : x)))}
                       placeholder="unit, e.g. degC"
                       style={{ flex: 1, padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)" }} />
@@ -280,7 +311,7 @@ export default function ChangeCasesPage() {
                 </div>
                 <div style={{ flex: 1 }}>
                   <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Target unit</label>
-                  <input value={targetUnit} onChange={(e) => setTargetUnit(e.target.value)}
+                  <input required list="unit-suggestions" value={targetUnit} onChange={(e) => setTargetUnit(e.target.value)}
                     placeholder="e.g. h"
                     style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
                 </div>
@@ -301,6 +332,9 @@ export default function ChangeCasesPage() {
                   </select>
                 </div>
               </div>
+              <datalist id="unit-suggestions">
+                {UNIT_SUGGESTIONS.map((u) => <option key={u} value={u} />)}
+              </datalist>
               <Button type="submit" variant="primary" loading={creating}>Create diagnostic</Button>
             </form>
           </Card>

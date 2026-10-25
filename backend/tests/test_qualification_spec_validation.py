@@ -15,7 +15,9 @@ from backend.app.schemas.errors import ValidationError  # noqa: E402
 from backend.tests._api_base import IsolatedApiTestCase  # noqa: E402
 
 GOOD = {"feature_columns": ["crosslinker_ratio", "cure_temp_c"], "target_metric": "salt_spray_hours",
-        "target_value": 300.0, "direction": "maximize"}
+        "target_value": 300.0, "direction": "maximize",
+        # every modelled field and the target needs an explicit unit when a diagnostic is created
+        "units": {"crosslinker_ratio": "fraction", "cure_temp_c": "degC", "salt_spray_hours": "h"}}
 
 
 def problem(spec):
@@ -40,6 +42,8 @@ class TestSpecSchema(unittest.TestCase):
 
     def test_required_fields(self):
         for key in GOOD:
+            if key == "units":
+                continue  # optional for the shape check; creation requires them (test_units_at_creation.py)
             spec = {k: v for k, v in GOOD.items() if k != key}
             err = problem(spec)
             self.assertIsNotNone(err, key)
@@ -66,7 +70,8 @@ class TestSpecSchema(unittest.TestCase):
         for bad in ([], "a", None, [1], [""], ["  "], ["a", "a"], ["a", "A"], ["a "], [" a"], ["a\nb"], ["x" * 101],
                     [f"f{i}" for i in range(51)]):
             self.assertIsNotNone(problem({**GOOD, "feature_columns": bad}), repr(bad)[:40])
-        self.assertIsNone(problem({**GOOD, "feature_columns": ["Viscosity (cP)", "solids %"]}))
+        self.assertIsNone(problem({**GOOD, "feature_columns": ["Viscosity (cP)", "solids %"],
+                                   "units": {"salt_spray_hours": "h"}}))
 
     def test_duplicate_features_are_named_in_the_message(self):
         err = problem({**GOOD, "feature_columns": ["a", "b", "a"]})
@@ -111,9 +116,9 @@ class TestSpecThroughTheApi(IsolatedApiTestCase):
 
     def test_valid_spec_is_stored_exactly(self):
         _, client = self.org_and_client("SpecOK")
-        r = self._create(client, {**GOOD, "units": {"salt_spray_hours": "h"}})
+        r = self._create(client, GOOD)
         self.assertEqual(r.status_code, 201, r.text)
-        self.assertEqual(json.loads(r.json()["qualification_spec_json"]), {**GOOD, "units": {"salt_spray_hours": "h"}})
+        self.assertEqual(json.loads(r.json()["qualification_spec_json"]), GOOD)
 
     def test_invalid_specs_are_rejected_with_400_and_nothing_is_stored(self):
         _, client = self.org_and_client("SpecBad")
@@ -144,7 +149,8 @@ class TestSpecThroughTheApi(IsolatedApiTestCase):
         # exactly what the Diagnostics create form sends
         _, client = self.org_and_client("SpecForm")
         spec = {"feature_columns": ["viscosity", "solids_pct"], "target_metric": "salt_spray_hours",
-                "target_value": 500, "direction": "maximize", "units": {"viscosity": "cP", "salt_spray_hours": "h"}}
+                "target_value": 500, "direction": "maximize",
+                "units": {"viscosity": "cP", "solids_pct": "%", "salt_spray_hours": "h"}}
         self.assertEqual(self._create(client, spec).status_code, 201)
 
     def test_unauthenticated_create_is_rejected(self):

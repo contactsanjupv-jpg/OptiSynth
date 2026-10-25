@@ -32,6 +32,9 @@ export interface ChangeCase {
   updated_at: string;
   /** Returned by the list and by GET /api/change-cases/{id} as stored JSON text. */
   qualification_spec_json?: string;
+  /** Only on the response to creating a diagnostic: what each custom (unrecognised but explicit) unit label means --
+   *  exact-spelling match only, not dimensionally validated, never converted. */
+  unit_notes?: string[];
   /** Set when archived (hidden from the default list, read-only). */
   archived_at?: string | null;
   archived?: boolean;

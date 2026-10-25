@@ -7,7 +7,7 @@ What is proven here, through the real HTTP path unless a test says otherwise:
     applied to an EDIT, and values for fields the diagnostic does not model are refused (they used to be
     stored silently), as are booleans and numeric strings;
   * editing input values keeps the old prediction as history but marks it as computed for the previous
-    values -- rank, domain coverage and decision support are withheld, and the report leaves it out --
+    values -- rank, domain coverage and decision support are withheld, and the report is refused --
     until the ranking is re-run;
   * adding, removing or restoring a candidate after a ranking withholds the order the same way;
   * a candidate nothing depends on can be deleted; a ranked one is "removed from the analysis" instead
@@ -235,7 +235,7 @@ class TestCandidateLifecycleApi(IsolatedApiTestCase):
         cid = add.json()["id"]
         url = f"/api/change-cases/{case_id}/candidates/{cid}"
         values = {"crosslinker_ratio": 0.1, "cure_time_h": 90}
-        no_unit = client.patch(url, json={"features": values})
+        no_unit = client.patch(url, json={"features": values, "units": {}})  # {} = the test says "no units"
         self.assertEqual(no_unit.status_code, 400)
         self.assertIn("unit is required", no_unit.json()["error"])
         wrong = client.patch(url, json={"features": values, "units": {"cure_time_h": "furlongs"}})
@@ -350,13 +350,21 @@ class TestCandidateLifecycleApi(IsolatedApiTestCase):
             candidate_repo.persist_ranking(org_id, dataset["id"], [row(a, 0), row(987654, 0)])  # no such candidate
         self.assertEqual(candidate_repo.get_candidate_usage_map(org_id, case_id), before, "nothing may be saved")
 
-    def test_report_leaves_out_a_prediction_for_old_values_and_says_the_candidate_is_not_ranked(self):
+    def test_report_is_refused_after_an_edit_and_never_uses_the_prediction_for_old_values(self):
+        """It used to generate a report that left the edited candidate out ("Not yet ranked: PolyGuard") but still
+        printed a ranked table for the rest, i.e. a partial ranking from before the edit. A report now needs a
+        ranking that still describes the candidates as they are (see test_report_ranking_currency.py)."""
         _, client, case_id, a, _b = self._ranked_case("report")
         self._patch(client, case_id, a, {"features": A_EDITED})
         resp = client.post(f"/api/change-cases/{case_id}/report")
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertIn("PolyGuard", resp.json()["error"])
+        self.assertIn("Input values were changed", resp.json()["error"])
+        self._rank(client, case_id)
+        resp = client.post(f"/api/change-cases/{case_id}/report")
         self.assertEqual(resp.status_code, 200, resp.text)
         text = self.docx_text(resp.content)
-        self.assertIn("Not yet ranked: PolyGuard", text)
+        self.assertNotIn("Not yet ranked: PolyGuard", text)
         self.assertIn("EcoShield", text)
 
     # ------------------------------------------------------------ delete / remove from analysis

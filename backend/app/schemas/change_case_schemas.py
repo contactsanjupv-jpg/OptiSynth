@@ -52,7 +52,12 @@ class QualificationSpec(BaseModel):
     direction: Literal["maximize", "minimize"] = Field(
         description="'maximize': the property must be at or above target_value; 'minimize': at or below.")
     units: dict[str, str] | None = Field(
-        default=None, description="Canonical unit per modelled column. Columns left out are not unit-checked.")
+        default=None,
+        description="Canonical unit for EVERY modelled input feature and for the target (required when a diagnostic "
+        "is created; cannot be edited afterwards). Use a real unit (degC, h, mm ...), or explicitly 'dimensionless', "
+        "'fraction' (0-1) or '%' (0-100) -- three different units, never converted into each other. Any other "
+        "explicit label is a custom unit matched by exact symbol only (letter case matters, spacing is ignored). Older diagnostics may lack units; they "
+        "cannot be ranked.")
 
     @field_validator("feature_columns", mode="after")
     @classmethod

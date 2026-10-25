@@ -19,10 +19,10 @@ import numpy as np  # noqa: E402
 
 from backend.app.services.report_builder import format_predicted_value  # noqa: E402
 from backend.tests import evidence_fixtures as F  # noqa: E402
-from backend.tests._api_base import SPEC_H, IsolatedApiTestCase  # noqa: E402
+from backend.tests._api_base import SPEC, SPEC_H, IsolatedApiTestCase  # noqa: E402
 
 HEAD = ["crosslinker_ratio", "cure_temp_c", "salt_spray_hours"]
-DECLARED_H = {"declared_units": {"salt_spray_hours": "h"}}  # the file has no unit cells; the reviewer declares hours
+DECLARED_H = {"declared_units": {"crosslinker_ratio": "fraction", "cure_temp_c": "degC", "salt_spray_hours": "h"}}  # the file has no unit cells; the reviewer declares them (all three: a ranking needs every unit)
 
 
 def history_csv(n=14):
@@ -38,7 +38,7 @@ class Level1Base(IsolatedApiTestCase):
     dir_name = "_test_env_level1"
 
     def new_case(self, label, n_history=14):
-        org_id, client, case_id = self.setup_case(label, SPEC_H)
+        org_id, client, case_id = self.setup_case(label, SPEC)
         self.paid(org_id)
         self.assertEqual(self.upload(client, case_id, "history.csv", history_csv(n_history), DECLARED_H).status_code, 201)
         return org_id, client, case_id
@@ -202,12 +202,15 @@ class TestReportCarriesTheSameResults(Level1Base):
         self.assertEqual([c["candidate_name"] for c in listed], names)
 
     def test_report_without_a_declared_target_unit_says_so(self):
-        from backend.tests._api_base import SPEC
-        org_id, client, case_id = self.setup_case("RP3", SPEC)
+        from backend.tests._api_base import SPEC_NO_UNITS, persist_legacy_ranking
+        org_id, client, case_id = self.setup_case("RP3", SPEC_NO_UNITS)
         self.paid(org_id)
         self.assertEqual(self.upload(client, case_id, "history.csv", history_csv()).status_code, 201)
         self.add(client, case_id, "A", spread_features(1))
-        self.rank(client, case_id)
+        # A diagnostic with no declared units cannot be ranked any more (the API refuses), so this is a LEGACY one:
+        # its ranking is stored directly, as it would have been before units were required.
+        self.assertEqual(client.post(f"/api/change-cases/{case_id}/rank").status_code, 400)
+        persist_legacy_ranking(org_id, case_id)
         text = self.docx_text(client.post(f"/api/change-cases/{case_id}/report").content)
         self.assertIn("No canonical unit is declared for this property", text)
         self.assertIn("Predicted salt_spray_hours (model estimate)", text)

@@ -76,6 +76,8 @@ def main():
         "target_metric": "salt_spray_hours",
         "target_value": 500.0,
         "direction": "maximize",
+        # A diagnostic needs an explicit unit for every modelled field and the target (and units cannot be edited).
+        "units": {"crosslinker_ratio": "fraction", "cure_temp_c": "degC", "salt_spray_hours": "h"},
     }
     case = change_case_service.create_change_case(
         org_id, user_id,
@@ -88,6 +90,7 @@ def main():
 
     result = qualification_dataset_service.ingest_qualification_csv(
         org_id, case["id"], user_id, spec, "aquashield_400_historical_trials.csv", _historical_csv(),
+        options={"declared_units": dict(spec["units"])},  # the demo CSV has no unit cells: the units are declared
     )
 
     candidates = [
@@ -97,7 +100,8 @@ def main():
         ("GreenCoat Alt-9 (early-stage bio-based candidate)", {"crosslinker_ratio": 0.082, "cure_temp_c": 141}),
     ]
     for name, features in candidates:
-        change_case_service.add_candidate(org_id, case["id"], name, features)
+        change_case_service.add_candidate(org_id, case["id"], name, features, units={
+            "crosslinker_ratio": "fraction", "cure_temp_c": "degC"})
 
     ranked = change_case_service.rank_change_case(org_id, case["id"])
 

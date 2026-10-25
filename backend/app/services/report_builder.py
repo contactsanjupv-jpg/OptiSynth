@@ -370,6 +370,17 @@ def _evidence_gaps(ranked_results, ctx):
                     f"{r['candidate_name']}: no historical evidence at {col} = {f['value']} "
                     f"(observed {f['historical_min']} to {f['historical_max']}); the estimate is an extrapolation."
                 )
+    spec_for_units = ctx.get("spec") or {}
+    undeclared = [
+        f for f in list(spec_for_units.get("feature_columns") or []) + ([spec_for_units["target_metric"]] if spec_for_units.get("target_metric") else [])
+        if not str((spec_for_units.get("units") or {}).get(f) or "").strip()
+    ]
+    if undeclared:
+        gaps.append(
+            "Canonical units were not declared for: " + ", ".join(undeclared) + ". Any ranking shown in this report "
+            "was produced without unit checking, so its inputs and evidence cannot be shown to be comparable. "
+            "New rankings are refused until units are declared."
+        )
     for r in ranked_results:
         if r.get("ranking_status") == evidence_rules.STATUS_NOT_RANKED:
             gaps.append(
@@ -411,20 +422,25 @@ def _add_recorded_outcomes(doc, ctx):
     table.style = "Light Grid Accent 1"
     hdr = table.rows[0].cells
     hdr[0].text = "Candidate"
-    hdr[1].text = "Model-estimated probability (latest ranking)"
+    hdr[1].text = "Model-estimated probability (latest estimate made before the result was recorded)"
     hdr[2].text = "Recorded result"
     hdr[3].text = "Recorded as meeting requirement"
     hdr[4].text = "Recorded (UTC)"
     for o in outcomes:
         row = table.add_row().cells
         row[0].text = o["candidate_name"]
-        row[1].text = f"{o['model_probability']:.0%}" if o.get("model_probability") is not None else "Not ranked"
+        if o.get("model_probability") is not None:
+            made = f" (estimated {o['estimate_made_at']})" if o.get("estimate_made_at") else ""
+            row[1].text = f"{o['model_probability']:.0%}{made}"
+        else:
+            row[1].text = o.get("comparison_note") or "Not ranked"
         row[2].text = o["actual_result"] or ""
         row[3].text = "Yes" if o["passed_spec"] else "No"
         row[4].text = str(o["recorded_at"])
     doc.add_paragraph(
         "Outcomes are entered by the customer's team and are append-only records; they are shown "
-        "next to the model estimate for comparison and do not alter it."
+        "next to the model estimate for comparison and do not alter it. An estimate is shown only if it was "
+        "made before the result was recorded; the system does not record which estimate, if any, led to a test."
     ).runs[0].font.size = Pt(9)
 
 
@@ -644,14 +660,24 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
                 f"points): R\u00b2 = {model_quality['r2_score']}, mean absolute error = "
                 f"{model_quality['mean_absolute_error']} ({model_quality['prediction_accuracy_pct']}% of "
                 f"held-out predictions fell within {model_quality['accuracy_tolerance_band']}, a "
-                f"tolerance band of 10% of this dataset's observed target range)."
+                f"heuristic tolerance band of 10% of this dataset's observed target range -- not an "
+                f"engineering acceptance threshold)."
             )
             if uncertainty_calibration and "error" not in uncertainty_calibration:
+                if uncertainty_calibration.get("sigma_error_correlation_defined", True):
+                    correlation_text = (
+                        f"{uncertainty_calibration['sigma_error_correlation']} "
+                        "(positive means higher predicted uncertainty is associated with larger actual error)"
+                    )
+                else:
+                    correlation_text = (
+                        "not defined (the predicted uncertainty or the held-out error was constant, so no "
+                        "rank correlation can be computed)"
+                    )
                 doc.add_paragraph(
                     "Predicted-uncertainty calibration: correlation between predicted uncertainty "
-                    f"and actual held-out error = {uncertainty_calibration['sigma_error_correlation']} "
-                    "(positive means higher predicted uncertainty is associated with larger actual "
-                    f"error); {uncertainty_calibration['within_1sigma_pct']}% of held-out points fell "
+                    f"and actual held-out error = {correlation_text}; "
+                    f"{uncertainty_calibration['within_1sigma_pct']}% of held-out points fell "
                     f"within 1 predicted standard deviation, "
                     f"{uncertainty_calibration['within_2sigma_pct']}% within 2."
                 )

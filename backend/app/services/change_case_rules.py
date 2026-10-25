@@ -13,6 +13,7 @@ import math
 from datetime import datetime, timezone
 
 from backend.app.schemas.errors import ValidationError
+from backend.app.services import evidence_rules
 
 
 MIN_HISTORICAL_ROWS_FOR_PREDICTION = 8
@@ -147,6 +148,88 @@ def check_candidate_name_unique(name: str, existing_names: list) -> None:
             "the two candidates cannot be confused in the ranking or the report.",
             field="name",
         )
+
+
+UNITS_GUIDANCE = (
+    "Units are never guessed from column names or values: declare each one explicitly. Use the real unit "
+    "(for example degC, h, mm), 'fraction' for a dimensionless ratio between 0 and 1, '%' for a percentage, or "
+    "'dimensionless' for a pure number. 'fraction' and '%' are different units and are never converted into each "
+    "other automatically. A diagnostic's units cannot be edited after it is created: create a new diagnostic that "
+    "declares them and upload the evidence again. This diagnostic's stored data and any earlier results are left "
+    "unchanged."
+)
+
+
+def units_declaration_problems(spec: dict) -> list:
+    """[{"field", "role", "problem"}] for every modelled input feature and the target that does not have an
+    explicit, valid canonical unit in the case spec. Pure; guesses nothing.
+
+    A unit is missing when the field has no entry (or a blank one). It is AMBIGUOUS when it differs from a
+    supported unit symbol only by letter case (declaring 'H' where 'h' is meant), because unit symbols are
+    case-sensitive and the case would otherwise quietly mean something else. Any other explicit, non-blank unit
+    -- including 'dimensionless', 'fraction' or '%' -- is a valid canonical unit: conversions between units are
+    exact where supported and refused otherwise (evidence_rules)."""
+    units = spec.get("units") or {}
+    problems = []
+    fields = [(f, "input feature") for f in (spec.get("feature_columns") or [])]
+    if spec.get("target_metric"):
+        fields.append((spec["target_metric"], "target"))
+    for field, role in fields:
+        unit = units.get(field)
+        if unit is None or not str(unit).strip() or evidence_rules.normalize_unit(unit) is None:
+            problems.append({"field": field, "role": role, "problem": "no unit declared"})
+            continue
+        hint = evidence_rules.ambiguous_dimensionless_hint(unit)
+        if hint:
+            problems.append({"field": field, "role": role, "problem": hint})
+            continue
+        alternatives = evidence_rules.case_only_alternatives(unit)
+        if alternatives:
+            problems.append({
+                "field": field, "role": role,
+                "problem": f"{str(unit).strip()!r} is ambiguous: it differs from "
+                           f"{', '.join(repr(a) for a in alternatives)} only by letter case",
+            })
+    return problems
+
+
+UNITS_GUIDANCE_AT_CREATION = (
+    "Units are never guessed from column names or values: declare each one explicitly. Use the real unit "
+    "(for example degC, h, mm), 'dimensionless' for a pure number, 'fraction' for a ratio between 0 and 1, or '%' "
+    "for a percentage. These three are different units and are never converted into each other automatically. Any "
+    "other explicit label is accepted as a custom unit that is matched by exact symbol only (letter case matters, spacing is ignored) (it is not checked "
+    "dimensionally and never converted). Units cannot be edited after the diagnostic is created, so declare them now."
+)
+
+
+def units_problem_message(problems: list, at_creation: bool = False) -> str:
+    listed = "; ".join(f"{p['field']} ({p['role']}): {p['problem']}" for p in problems)
+    if at_creation:
+        return (
+            "A diagnostic needs an explicit canonical unit for every modelled input feature and for the target. "
+            f"Not usable: {listed}. {UNITS_GUIDANCE_AT_CREATION}"
+        )
+    return (
+        "Ranking needs an explicit canonical unit for every modelled input feature and for the target. "
+        f"Not usable: {listed}. {UNITS_GUIDANCE}"
+    )
+
+
+def check_units_declared_at_creation(spec: dict) -> None:
+    """Refuses a new diagnostic whose spec leaves any modelled feature or the target without an explicit, valid
+    canonical unit. Units cannot be edited afterwards, so a diagnostic created without them could never be ranked."""
+    problems = units_declaration_problems(spec)
+    if problems:
+        raise ValidationError(units_problem_message(problems, at_creation=True), field="units")
+
+
+def check_units_declared_for_ranking(spec: dict) -> None:
+    """Raises ValidationError (naming the fields and how to resolve them) unless every modelled feature and the
+    target has an explicit, valid canonical unit. Called by the ranking run BEFORE anything is computed or saved,
+    so a refused ranking leaves no predictions behind."""
+    problems = units_declaration_problems(spec)
+    if problems:
+        raise ValidationError(units_problem_message(problems), field="units")
 
 
 def check_can_trigger_ranking(historical_row_count: int, candidate_count: int) -> None:
@@ -664,30 +747,21 @@ def assess_evidence_sufficiency(spec: dict, experiment_rows: list, candidates: l
             checks.append(_check("REVIEW_RECORD", SUFFICIENCY_WARN, "Intake review on record",
                                  "This dataset was uploaded before intake review records were kept: its column "
                                  "mapping, units and conditions were not recorded."))
-        else:
-            spec_units = spec.get("units") or {}
-            no_unit = [c for c in feature_columns + [spec.get("target_metric")] if c and c not in spec_units]
-            if no_unit:
-                # Two different things, kept apart on purpose: SOURCE units (what the
-                # customer's file used, declared by the reviewer at intake) versus
-                # CASE units (the canonical unit the diagnostic itself is defined in,
-                # which is what lets candidate inputs be checked and converted).
-                source_text = _source_units_text(dataset_review)
-                detail = "The case defines no canonical unit for: " + ", ".join(no_unit) + ". "
-                if source_text:
-                    detail += (
-                        "Units recorded at intake for the imported file (" + source_text + ") describe that file only; "
-                        "they are not enforced by the case. "
-                    )
-                detail += (
-                    "Without case units, candidate inputs are not unit-checked or converted, and evidence from "
-                    "another file cannot be shown to be comparable."
-                )
-                checks.append(_check("UNITS_DECLARED", SUFFICIENCY_WARN, "Case units not defined for every modelled field",
-                                     detail))
-            else:
-                checks.append(_check("UNITS_DECLARED", SUFFICIENCY_PASS, "Case units defined for every modelled field",
-                                     "A canonical unit is defined in the case for every modelled field."))
+
+    # Units are a property of the CASE, not of any upload, so this is judged whether or not a dataset exists and
+    # whether or not it has an intake review record (an older dataset has none). It is BLOCKING: ranking is
+    # refused (check_units_declared_for_ranking) until every modelled field and the target has an explicit unit.
+    unit_problems = units_declaration_problems(spec)
+    if unit_problems:
+        detail = units_problem_message(unit_problems)
+        source_text = _source_units_text(dataset_review) if dataset_review is not None else ""
+        if source_text:
+            detail += (" Units recorded at intake for the imported file (" + source_text + ") describe that file "
+                       "only; they do not declare the case's units.")
+        checks.append(_check("UNITS_DECLARED", SUFFICIENCY_FAIL, "Case units missing for some modelled fields", detail))
+    else:
+        checks.append(_check("UNITS_DECLARED", SUFFICIENCY_PASS, "Case units declared for every modelled field",
+                             "An explicit canonical unit is declared in the case for every modelled field and the target."))
 
     if len(candidates) < 1:
         checks.append(_check("CANDIDATES_PRESENT", SUFFICIENCY_FAIL, "At least one named candidate",

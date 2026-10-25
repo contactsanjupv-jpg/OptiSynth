@@ -8,6 +8,8 @@ import io
 import os
 import shutil
 import unittest
+
+from backend.tests._api_base import unit_aware_client
 from contextlib import redirect_stdout
 
 
@@ -36,7 +38,7 @@ class TestOperatorActivation(unittest.TestCase):
         command.upgrade(cfg, "head")
         from fastapi.testclient import TestClient
         from backend.app.main import app
-        cls.client_factory = staticmethod(lambda: TestClient(app))
+        cls.client_factory = staticmethod(lambda: unit_aware_client(app))
         cls._n = 0
 
     @classmethod
@@ -175,7 +177,8 @@ class TestOperatorActivation(unittest.TestCase):
         from backend.app.services import operator_service
         org_id, client = self._new_org("Rank After Activation Co")
         spec = {"feature_columns": ["viscosity", "solids_pct"], "target_metric": "adhesion_score",
-                "target_value": 80.0, "direction": "maximize"}
+                "target_value": 80.0, "direction": "maximize",
+                "units": {"viscosity": "mPa.s", "solids_pct": "%", "adhesion_score": "score"}}  # a ranking needs units
         case = client.post("/api/change-cases", json={
             "name": "case", "trigger_type": "regulatory_restriction",
             "restricted_substance": "PFHxA", "qualification_spec": spec}).json()
@@ -235,9 +238,16 @@ class TestOperatorActivation(unittest.TestCase):
         spec.loader.exec_module(cli)
         org_id, client = self._new_org("Review Cli Co")
         case_spec = {"feature_columns": ["a", "b"], "target_metric": "y", "target_value": 5.0, "direction": "maximize"}
-        case = client.post("/api/change-cases", json={
-            "name": "c", "trigger_type": "regulatory_restriction", "restricted_substance": "x",
-            "qualification_spec": case_spec}).json()
+        # This test is about the read-only review CLI on a unitless diagnostic. The API no longer creates one, so it
+        # is stored directly, as a legacy diagnostic would be.
+        from sqlalchemy import text
+        from backend.app.config.database import db_connection
+        from backend.app.repositories import change_case_repo
+        with db_connection() as conn:
+            user_id = conn.execute(text("SELECT user_id FROM memberships WHERE organization_id = :o LIMIT 1"),
+                                   {"o": org_id}).scalar()
+        case = {"id": change_case_repo.create_change_case(org_id, user_id, "c", "regulatory_restriction", "x",
+                                                          json.dumps(case_spec))}
         rows = "\n".join(f"{i},{i * 2},{i * 3}" for i in range(1, 13))
         with tempfile.TemporaryDirectory() as d:
             alias = os.path.join(d, "alias.csv")

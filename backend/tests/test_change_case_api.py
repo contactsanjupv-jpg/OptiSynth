@@ -32,6 +32,8 @@ import shutil
 
 import unittest
 
+from backend.tests._api_base import unit_aware_client
+
 
 
 
@@ -123,7 +125,7 @@ class TestChangeCaseApi(unittest.TestCase):
 
 
 
-        cls.client_factory = staticmethod(lambda: TestClient(app))
+        cls.client_factory = staticmethod(lambda: unit_aware_client(app))
 
 
 
@@ -152,6 +154,9 @@ class TestChangeCaseApi(unittest.TestCase):
             "target_value": 80.0,
 
             "direction": "maximize",
+
+            # Every modelled field and the target needs a declared unit before a ranking is possible.
+            "units": {"viscosity": "mPa.s", "solids_pct": "%", "adhesion_score": "score"},
 
         }
 
@@ -4126,7 +4131,9 @@ class TestChangeCaseApi(unittest.TestCase):
         self.assertIn("No physical validation outcome has been recorded for", text)
         # B3: with an intake review record the unit/condition gaps are stated per
         # dataset (the generic wording is only used for datasets with no record).
-        self.assertIn("No unit is recorded for: viscosity, solids_pct, adhesion_score", text)
+        # (This fixture case declares a canonical unit for every field, which a ranking now requires, so the
+        # report says units are recorded; the "no unit declared" wording is covered in test_units_before_ranking.)
+        self.assertIn("Units are recorded for every modelled column", text)
         self.assertIn("No test-condition columns were declared at intake", text)
         self.assertIn("Row-level source provenance", text)
 

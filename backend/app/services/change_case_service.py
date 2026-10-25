@@ -75,12 +75,19 @@ def create_change_case(organization_id: int, created_by_user_id: int, name: str,
     spec_problem = evidence_rules.validate_spec_extensions(qualification_spec)
     if spec_problem:
         raise ValidationError(spec_problem, field="qualification_spec")
+    # Units are mandatory for every modelled field and the target, and cannot be edited later: a diagnostic
+    # created without them could never be ranked. Enforced here (not only in the form) so that direct API calls,
+    # scripts and any other caller get the same refusal.
+    change_case_rules.check_units_declared_at_creation(qualification_spec)
     change_case_id = change_case_repo.create_change_case(
         organization_id, created_by_user_id, name, trigger_type,
         restricted_substance, json.dumps(qualification_spec),
     )
 
-    return change_case_repo.get_change_case(organization_id, change_case_id)
+    case = change_case_repo.get_change_case(organization_id, change_case_id)
+    # Say plainly what an explicit-but-unrecognised label means (exact-match only, not dimensionally validated).
+    case["unit_notes"] = evidence_rules.custom_unit_notes(qualification_spec)
+    return case
 
 
 
@@ -434,6 +441,9 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
     not-found from not-yours' rule."""
     case = get_change_case_or_404(organization_id, change_case_id)
     _check_entitled(organization_id)
+    # Every modelled field and the target needs an explicit canonical unit. Checked first, before anything is
+    # read or computed, so a refused ranking persists nothing and never looks like it ran.
+    change_case_rules.check_units_declared_for_ranking(json.loads(case["qualification_spec_json"]))
 
     dataset = qualification_dataset_repo.get_latest_dataset_for_change_case(organization_id, change_case_id)
     if dataset is None:
@@ -657,6 +667,16 @@ def record_outcome(organization_id: int, candidate_id: int, recommended_experime
     return {"id": outcome_id, "candidate_id": candidate_id, "actual_result": actual_result, "passed_spec": passed_spec}
 
 
+def _outdated_ranking_message(case: dict, edited_names: list) -> str:
+    parts = ["The report can't be generated yet: the last ranking no longer matches the current candidates."]
+    if edited_names:
+        parts.append("Input values were changed after the ranking ran for: " + ", ".join(edited_names) + ".")
+    if case.get("archived_at"):
+        parts.append("This diagnostic is archived and can't be re-ranked: restore it first.")
+    parts.append(cand_rules.ORDER_OUTDATED_NOTICE)
+    return " ".join(parts)
+
+
 def generate_report(organization_id: int, change_case_id: int, organization_name: str) -> str:
     """Builds the qualification diagnostic .docx from the change case's
     latest candidates/predictions -- the commercial deliverable. Uses
@@ -666,6 +686,16 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
 
     case = get_change_case_or_404(organization_id, change_case_id)
     candidates = list_candidates_with_predictions(organization_id, change_case_id)
+
+    # The report presents ONE ranking as the current comparison of the candidates, so that ranking must still
+    # describe the candidates as they are now. If a candidate was added, removed, restored or edited after the
+    # ranking ran, the positions come from a different set: printing them (or silently dropping the changed
+    # candidates and ranking whoever is left) would show an earlier comparison as the current one. The
+    # candidate listing already withholds those positions; the report is refused for the same condition, the
+    # same way it is already refused when predictions come from different dataset versions (below).
+    edited = [c["candidate_name"] for c in candidates if c.get("prediction_inputs_stale")]
+    if edited or any(c.get("ranking_outdated") for c in candidates):
+        raise ValidationError(_outdated_ranking_message(case, edited), field="ranking")
 
     # Dataset provenance: a report is evaluated against the dataset its
     # predictions were generated from (predictions.dataset_version_id) --
@@ -739,6 +769,14 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
             rec_spec["target_value"], rec_spec["direction"], c.get("domain_coverage"),
             ranking_status=verdict["status"],
         )
+        if c.get("outcome_count"):
+            # Don't ask for a test the report itself shows as already done without saying so: the recorded
+            # result, not this estimate, is the evidence of how the candidate performed.
+            description += (
+                " A physical outcome has already been recorded for this candidate (see 'Recorded physical "
+                "validation outcomes'); that recorded result, not this model estimate, is the evidence of how "
+                "it performed."
+            )
         ranked_results.append({
             "rank": verdict["rank"],  # None = not ranked (insufficient evidence)
             "ranking_status": verdict["status"],
@@ -763,6 +801,35 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
     )
 
 
+def _utc(stamp: str):
+    from datetime import datetime, timezone
+    parsed = datetime.fromisoformat(stamp)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _estimate_before_outcome(organization_id: int, candidate, outcome: dict):
+    """(prediction, None) for the newest estimate that existed when `outcome` was recorded and was computed for
+    the candidate's CURRENT input values, else (None, reason).
+
+    Ranking is re-run, never overwritten, so earlier predictions are still stored. Pairing a recorded physical
+    result with the candidate's LATEST estimate would imply the model had predicted a test that had already
+    happened. Nothing stored says which estimate (if any) motivated a given test -- an outcome's
+    recommended_experiment_id is optional and a recommended experiment carries no prediction id -- so this only
+    establishes what existed beforehand, and the report says exactly that. A candidate's inputs cannot be
+    changed once an outcome is recorded for it, so the current inputs are the inputs that were tested."""
+    if candidate is None:
+        return None, "Not compared: the candidate could not be found."
+    recorded_at = _utc(outcome["created_at"])
+    earlier = [
+        p for p in candidate_repo.list_predictions_for_candidate(organization_id, candidate["id"])
+        if cand_rules.prediction_matches_inputs(candidate, p) and _utc(p["created_at"]) <= recorded_at
+    ]
+    if not earlier:
+        return None, ("Not compared: no model estimate for this candidate's inputs existed when this result "
+                      "was recorded.")
+    return earlier[-1], None
+
+
 def _build_report_audit_context(organization_id: int, change_case_id: int, case: dict,
                                  candidates: list, dataset) -> dict:
     """Read-only facts for the report's requirement/analysis record, evidence
@@ -775,21 +842,24 @@ def _build_report_audit_context(organization_id: int, change_case_id: int, case:
     current = [c for c in candidates if c.get("latest_prediction") and not c.get("prediction_inputs_stale")]
     predictions = [c["latest_prediction"] for c in current]
     # Outcomes recorded for a candidate that was later removed from the analysis keep its name.
-    name_by_id = {
-        c["id"]: c["candidate_name"]
+    all_candidates = {
+        c["id"]: c
         for c in candidate_repo.list_candidates_for_change_case(organization_id, change_case_id, include_archived=True)
     }
-    prob_by_id = {c["id"]: c["latest_prediction"]["predicted_probability"] for c in current}
-    outcomes = [
-        {
-            "candidate_name": name_by_id.get(o["candidate_id"], "Unknown candidate"),
-            "model_probability": prob_by_id.get(o["candidate_id"]),
+    outcomes = []
+    for o in candidate_repo.list_outcomes_for_change_case(organization_id, change_case_id):
+        candidate = all_candidates.get(o["candidate_id"])
+        estimate, note = _estimate_before_outcome(organization_id, candidate, o)
+        outcomes.append({
+            "candidate_name": candidate["candidate_name"] if candidate else "Unknown candidate",
+            # Only an estimate that already existed when the result was recorded -- never a newer one.
+            "model_probability": estimate["predicted_probability"] if estimate else None,
+            "estimate_made_at": estimate["created_at"] if estimate else None,
+            "comparison_note": note,
             "actual_result": o["actual_result"],
             "passed_spec": bool(o["passed_spec"]),
             "recorded_at": o["created_at"],
-        }
-        for o in candidate_repo.list_outcomes_for_change_case(organization_id, change_case_id)
-    ]
+        })
     return {
         "change_case_id": change_case_id,
         "spec": spec,

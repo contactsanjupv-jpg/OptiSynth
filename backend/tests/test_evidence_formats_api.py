@@ -178,10 +178,11 @@ class TestXlsxCustomers(IsolatedApiTestCase):
     def test_unit_hidden_in_excel_number_format_is_warned_and_unit_must_be_declared(self):
         org_id, client, case_id = self.setup_case("XlsxFmt", SPEC_H)
         content = F.xlsx_missing_units_with_hidden_number_format()
-        pv = self.preview(client, case_id, "f.xlsx", content).json()
+        none_declared = {"declared_units": {}}  # this test is about a file with NO unit and nothing declared
+        pv = self.preview(client, case_id, "f.xlsx", content, none_declared).json()
         self.assertIn("XLSX_NUMBER_FORMAT_HIDES_TEXT", codes(pv["review"], "warning"))
         self.assertIn("UNIT_MISSING", codes(pv["review"], "blocking"))  # a bare number is not assumed to be hours
-        self.assert_rejected_nothing_stored(org_id, case_id, self.upload(client, case_id, "f.xlsx", content), "UNIT_MISSING")
+        self.assert_rejected_nothing_stored(org_id, case_id, self.upload(client, case_id, "f.xlsx", content, none_declared), "UNIT_MISSING")
         ok = self.upload(client, case_id, "f.xlsx", content, {"declared_units": {"salt_spray_hours": "h"}})
         self.assertEqual(ok.status_code, 201, ok.text)
 
@@ -323,7 +324,8 @@ class TestFeatureCountsAndSufficiencyGate(IsolatedApiTestCase):
 
     def _spec(self, n_features, target_value=300.0):
         return {"feature_columns": [f"f{i}" for i in range(1, n_features + 1)], "target_metric": "y",
-                "target_value": target_value, "direction": "maximize"}
+                "target_value": target_value, "direction": "maximize",
+                "units": {**{f"f{i}": "dimensionless" for i in range(1, n_features + 1)}, "y": "dimensionless"}}
 
     def _rows(self, n_features, n_rows):
         return [[(i + 1) * (j + 1) + j for j in range(n_features)] + [100 + 10 * i] for i in range(n_rows)]
@@ -394,10 +396,12 @@ class TestEndToEndXlsxToReport(IsolatedApiTestCase):
     dir_name = "_test_env_fmt_e"
 
     def test_xlsx_customer_to_report_with_canonical_units_provenance_and_gates(self):
-        org_id, client, case_id = self.setup_case("E2E", SPEC_U)
+        # SPEC_U declares no unit for crosslinker_ratio (a ranking needs one for every field), so this case adds it.
+        spec = {**SPEC_U, "units": {"crosslinker_ratio": "fraction", **SPEC_U["units"]}}
+        org_id, client, case_id = self.setup_case("E2E", spec)
         self.paid(org_id)
         content = F.xlsx_alt_headers()
-        opts = {**CONFIRM_ALIASES, "declared_units": {"cure_temp_c": "degC", "salt_spray_hours": "h"}}
+        opts = {**CONFIRM_ALIASES, "declared_units": {"crosslinker_ratio": "fraction", "cure_temp_c": "degC", "salt_spray_hours": "h"}}
         ok = self.upload(client, case_id, "Customer Salt Spray.xlsx", content, opts)
         self.assertEqual(ok.status_code, 201, ok.text)
 
@@ -410,8 +414,8 @@ class TestEndToEndXlsxToReport(IsolatedApiTestCase):
         self.assertEqual(kelvin.status_code, 400)
         self.assertIn("cannot be safely converted", kelvin.json()["error"])
         stray = add("Stray", {"crosslinker_ratio": 0.12, "cure_temp_c": 160}, {"cure_temp_c": "°C", "crosslinker_ratio": "wt%"})
-        self.assertEqual(stray.status_code, 400)  # the case declares no unit for crosslinker_ratio: cannot be checked
-        good = add("Good", {"crosslinker_ratio": 0.12, "cure_temp_c": 160}, {"cure_temp_c": "°C"})
+        self.assertEqual(stray.status_code, 400)  # 'wt%' cannot be converted to the case's 'fraction': refused, not guessed
+        good = add("Good", {"crosslinker_ratio": 0.12, "cure_temp_c": 160}, {"cure_temp_c": "°C", "crosslinker_ratio": "fraction"})
         self.assertEqual(good.status_code, 201, good.text)
         self.assertEqual(client.get(f"/api/change-cases/{case_id}/candidates").json()[0]["input_record"]["cure_temp_c"]["unit"], "°C")
 

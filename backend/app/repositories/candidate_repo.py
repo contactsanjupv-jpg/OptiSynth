@@ -245,6 +245,19 @@ def get_latest_prediction_for_candidate(organization_id: int, candidate_id: int)
         return dict(row) if row else None
 
 
+def list_predictions_for_candidate(organization_id: int, candidate_id: int):
+    """EVERY prediction ever stored for the candidate, oldest first. A ranking is re-run, never overwritten,
+    so the history is retained; the report uses it to find the estimate that existed at the moment a
+    physical outcome was recorded (instead of pairing the outcome with the newest estimate)."""
+    with db_connection() as conn:
+        rows = conn.execute(
+            text("""SELECT * FROM predictions WHERE organization_id = :org_id AND candidate_id = :candidate_id
+                     ORDER BY id ASC"""),
+            {"org_id": organization_id, "candidate_id": candidate_id},
+        ).mappings().all()
+        return [dict(r) for r in rows]
+
+
 # ---------------------------------------------------------------------------
 # recommended_experiments
 # ---------------------------------------------------------------------------
