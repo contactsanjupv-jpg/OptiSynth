@@ -118,37 +118,41 @@ def update_status(organization_id: int, change_case_id: int, new_status: str) ->
     return change_case_repo.get_change_case(organization_id, change_case_id)
 
 
-def add_candidate(organization_id: int, change_case_id: int, name: str, features: dict, units: dict = None) -> dict:
-    case = get_change_case_or_404(organization_id, change_case_id)
-    change_case_rules.check_can_add_candidate(case["status"])
-    # No product-level cap on candidates, but names must be unique within the
-    # diagnostic (trimmed, case-insensitive) so two candidates can never be
-    # confused for each other in the ranking or the report.
-    # (Candidates removed from the analysis count too: restoring one must never create a duplicate name.)
-    change_case_rules.check_candidate_name_unique(
-        name, [c["candidate_name"] for c in candidate_repo.list_candidates_for_change_case(
-            organization_id, change_case_id, include_archived=True)],
-    )
-    # Priority 6 (A2): reject an incomplete candidate up front, once the case
-    # has a qualification_spec with feature_columns defined -- otherwise a
-    # candidate missing a required feature would silently be stored and only
-    # fail later, opaquely, when ranking tries to read the missing feature.
-    spec = json.loads(case["qualification_spec_json"])
+def validate_candidate_inputs(spec: dict, name: str, features: dict, units: dict, existing_names: list) -> tuple:
+    """Every check a candidate must pass before it is stored -- ONE function, used by manual "Add candidate" and
+    by the CSV import alike, so an imported candidate is never accepted on weaker terms than a typed one.
+    Raises ValidationError with the first problem. -> (properties_in_canonical_units, input_json_or_None).
+
+    No product-level cap on candidates, but names must be unique within the diagnostic (trimmed,
+    case-insensitive) so two candidates can never be confused in the ranking or the report. `existing_names`
+    must include candidates removed from the analysis too: restoring one must never create a duplicate name."""
+    change_case_rules.check_candidate_name_unique(name, existing_names)
+    # Priority 6 (A2): reject an incomplete candidate up front, once the case has a qualification_spec with
+    # feature_columns defined -- otherwise a candidate missing a required feature would silently be stored and
+    # only fail later, opaquely, when ranking tries to read the missing feature.
     change_case_rules.check_candidate_features_complete(spec.get("feature_columns"), features, name)
     # Level 1D: a value for a field the diagnostic does not model is refused, not silently stored
     # (it would be shown beside the candidate although the model never reads it).
     cand_rules.check_features_known(spec.get("feature_columns"), features, name)
     change_case_rules.check_candidate_features_finite(features, name)
-    # Same canonical-unit discipline as the historical data: where the case
-    # declares a unit the candidate must state one and it is converted only by
-    # an exact factor; nothing is guessed. What was ENTERED is kept alongside.
+    # Same canonical-unit discipline as the historical data: where the case declares a unit the candidate must
+    # state one and it is converted only by an exact factor; nothing is guessed. What was ENTERED is kept alongside.
     converted, input_record, problems = evidence_rules.convert_candidate_inputs(spec, features, units)
     if problems:
         raise ValidationError(f"Candidate {name!r} was not added: " + " ".join(problems), field="features")
     change_case_rules.check_candidate_features_finite(converted, name)
+    return converted, (json.dumps(input_record) if (units or spec.get("units")) else None)
+
+
+def add_candidate(organization_id: int, change_case_id: int, name: str, features: dict, units: dict = None) -> dict:
+    case = get_change_case_or_404(organization_id, change_case_id)
+    change_case_rules.check_can_add_candidate(case["status"])
+    existing = [c["candidate_name"] for c in candidate_repo.list_candidates_for_change_case(
+        organization_id, change_case_id, include_archived=True)]
+    spec = json.loads(case["qualification_spec_json"])
+    converted, input_json = validate_candidate_inputs(spec, name, features, units, existing)
     candidate_id = candidate_repo.create_candidate(
-        organization_id, change_case_id, name, converted,
-        input_json=json.dumps(input_record) if (units or spec.get("units")) else None,
+        organization_id, change_case_id, name, converted, input_json=input_json,
     )
     return candidate_repo.get_candidate(organization_id, candidate_id)
 

@@ -4014,7 +4014,7 @@ class TestChangeCaseApi(unittest.TestCase):
         self.assertEqual(far["ranking_status"], "not_ranked_insufficient_evidence")
         self.assertEqual(ranked[-1]["candidate_name"], "Far")
 
-        self.assertEqual(res["Resin A"]["decision_support"]["status"], "evidence_supported")
+        self.assertEqual(res["Resin A"]["decision_support"]["status"], "within_data_range")
         self.assertEqual(res["Edge"]["decision_support"]["status"], "caution")
 
     def test_c1_rank_and_candidate_listing_agree(self):
@@ -4052,7 +4052,7 @@ class TestChangeCaseApi(unittest.TestCase):
         self.assertEqual(self._upload_csv(client, case_id, self._csv_from_rows(wide)).status_code, 201)
         self.assertEqual(far_signal(), "requires_validation")  # newer upload must not launder it
         self.assertEqual(client.post(f"/api/change-cases/{case_id}/rank").status_code, 200)
-        self.assertEqual(far_signal(), "evidence_supported")  # only a NEW ranking re-stamps it
+        self.assertEqual(far_signal(), "within_data_range")  # only a NEW ranking re-stamps it
 
     def test_c1_prediction_with_unavailable_coverage_fails_safe(self):
         from unittest import mock
@@ -4096,7 +4096,7 @@ class TestChangeCaseApi(unittest.TestCase):
         self.assertIn("Model-estimated probability", text)
         self.assertIn("Decision support", text)
         self.assertIn("Requires validation", text)
-        self.assertIn("Evidence-supported", text)
+        self.assertIn("Within data range", text)
         self.assertIn("Outside historical range", text)
         self.assertIn(f"{ranked['Far']['predicted_probability']:.0%}", text)  # raw probability unchanged
         self.assertIn(f"{ranked['Far']['uncertainty_std']:.3f}", text)

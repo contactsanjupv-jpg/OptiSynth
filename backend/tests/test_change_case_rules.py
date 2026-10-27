@@ -406,10 +406,10 @@ class TestDeriveDecisionSupport(unittest.TestCase):
     def _cov(self, status):
         return {"status": status, "edge_margin_pct": 0.10, "features": {}, "note": "n"}
 
-    def test_within_maps_to_evidence_supported(self):
+    def test_within_maps_to_within_data_range(self):
         ds = change_case_rules.derive_decision_support(self._cov(change_case_rules.DOMAIN_WITHIN))
-        self.assertEqual(ds["status"], "evidence_supported")
-        self.assertEqual(ds["label"], "Evidence-supported")
+        self.assertEqual(ds["status"], "within_data_range")
+        self.assertEqual(ds["label"], "Within data range")
         self.assertEqual(ds["basis"], "historical_domain_coverage")
         self.assertEqual(ds["domain_status"], "within_historical_domain")
         self.assertIn("Physical validation is still required", ds["statement"])
@@ -431,19 +431,19 @@ class TestDeriveDecisionSupport(unittest.TestCase):
             ds = change_case_rules.derive_decision_support(bad, has_prediction=True)
             self.assertEqual(ds["status"], "requires_validation", msg=repr(bad))
             self.assertIsNone(ds["domain_status"])
-            self.assertNotEqual(ds["status"], "evidence_supported")
+            self.assertNotEqual(ds["status"], "within_data_range")
 
     def test_no_prediction_returns_none(self):
         self.assertIsNone(change_case_rules.derive_decision_support(None, has_prediction=False))
         self.assertIsNone(change_case_rules.derive_decision_support(
             self._cov(change_case_rules.DOMAIN_WITHIN), has_prediction=False))
 
-    def test_evidence_supported_if_and_only_if_domain_within(self):
+    def test_within_data_range_if_and_only_if_domain_within(self):
         for status in (change_case_rules.DOMAIN_WITHIN, change_case_rules.DOMAIN_NEAR_EDGE,
                        change_case_rules.DOMAIN_OUTSIDE, None):
             cov = self._cov(status) if status else None
             ds = change_case_rules.derive_decision_support(cov)
-            self.assertEqual(ds["status"] == "evidence_supported",
+            self.assertEqual(ds["status"] == "within_data_range",
                              status == change_case_rules.DOMAIN_WITHIN)
 
     def test_result_does_not_depend_on_probability_or_sigma(self):
@@ -465,7 +465,7 @@ class TestDeriveDecisionSupport(unittest.TestCase):
 
     def test_real_classifier_output_feeds_decision_support(self):
         ranges = {"viscosity": (450, 464)}
-        expected = {460: "evidence_supported", 465: "caution", 500: "requires_validation"}
+        expected = {460: "within_data_range", 465: "caution", 500: "requires_validation"}
         for value, status in expected.items():
             cov = change_case_rules.classify_candidate_domain_coverage({"viscosity": value}, ranges)
             self.assertEqual(change_case_rules.derive_decision_support(cov)["status"], status)

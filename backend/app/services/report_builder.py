@@ -98,9 +98,17 @@ MODEL_ESTIMATE_NOTE = (
 )
 DECISION_SUPPORT_EXPLANATION = (
     "Decision support is a separate, categorical signal derived only from whether each "
-    "candidate lies within the observed historical range of every feature. It does not "
-    "change or adjust the model-estimated probability, and 'Evidence-supported' does not "
-    "mean qualified: physical validation is required for every candidate."
+    "candidate lies within the observed historical range of every feature, checked one feature at a "
+    "time. It does not change or adjust the model-estimated probability. 'Within data range' does not "
+    "mean qualified, does not show that the combination of inputs is covered by the historical data or "
+    "that the model is accurate for the candidate, and is not physical evidence: physical validation is "
+    "required for every candidate."
+)
+
+CROSS_VALIDATION_CAVEAT = (
+    "These cross-validation figures use folds assigned at random by row. Repeated formulations (replicate "
+    "rows) can therefore fall on both sides of a split, so they can be more optimistic than performance on "
+    "new batches. They are not a test of this model on candidates it has not seen."
 )
 
 RANKING_ORDER_NOTE = evidence_rules.ORDERING_RULE
@@ -438,8 +446,10 @@ def _add_recorded_outcomes(doc, ctx):
         row[3].text = "Yes" if o["passed_spec"] else "No"
         row[4].text = str(o["recorded_at"])
     doc.add_paragraph(
-        "Outcomes are entered by the customer's team and are append-only records; they are shown "
-        "next to the model estimate for comparison and do not alter it. An estimate is shown only if it was "
+        "Outcomes are entered by the customer's team and are append-only records. The application does not "
+        "verify them against a test method, specimen record or the requirement: 'Recorded as meeting "
+        "requirement' is the customer's own entry. They are shown next to the model estimate for comparison "
+        "and do not alter it. An estimate is shown only if it was "
         "made before the result was recorded; the system does not record which estimate, if any, led to a test."
     ).runs[0].font.size = Pt(9)
 
@@ -663,6 +673,7 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
                 f"heuristic tolerance band of 10% of this dataset's observed target range -- not an "
                 f"engineering acceptance threshold)."
             )
+            doc.add_paragraph(CROSS_VALIDATION_CAVEAT).runs[0].font.size = Pt(9)
             if uncertainty_calibration and "error" not in uncertainty_calibration:
                 if uncertainty_calibration.get("sigma_error_correlation_defined", True):
                     correlation_text = (

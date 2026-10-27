@@ -23,7 +23,7 @@ from backend.app.schemas.change_case_schemas import (
 from backend.app.services import (
     change_case_service, change_case_lifecycle_service, change_case_lifecycle_rules,
     candidate_lifecycle_service, candidate_lifecycle_rules,
-    qualification_dataset_service, audit_service,
+    qualification_dataset_service, candidate_import_service, audit_service,
 )
 from backend.app.repositories import change_case_repo, candidate_repo, organizations_repo
 from backend.app.api.dependencies import get_current_actor, AuthContext
@@ -175,6 +175,40 @@ async def upload_qualification_dataset(change_case_id: int, file: UploadFile = F
     # dataset_routes.py's exact discipline for the original domain.
     audit_service.log(actor.organization_id, actor.user["id"], "qualification_dataset.upload", None,
                        detail=f"change_case_id={change_case_id} rows_ingested={result['rows_ingested']}")
+    return result
+
+
+@router.post("/{change_case_id}/candidates/import/preview")
+async def preview_candidate_import(change_case_id: int, file: UploadFile = File(...),
+                                    options: str | None = Form(None),
+                                    actor: AuthContext = Depends(get_current_actor)):
+    """Reads a candidates CSV and shows how it would be imported -- column mapping, expected units, row
+    problems -- without storing anything. `options` is an optional JSON object (name_column, column_mapping,
+    units, confirm_canonical_units)."""
+    change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)  # 404 if not owned
+    if not file.filename:
+        raise ValidationError("No file was selected.")
+    file_bytes = await read_upload_limited(file)
+    return candidate_import_service.preview_candidate_import(
+        actor.organization_id, change_case_id, file.filename, file_bytes, options)
+
+
+@router.post("/{change_case_id}/candidates/import", status_code=201)
+async def import_candidates(change_case_id: int, file: UploadFile = File(...),
+                             options: str | None = Form(None),
+                             actor: AuthContext = Depends(get_current_actor)):
+    """Stores every candidate of a CSV in one transaction (all or none), only with `"confirm": true` in the
+    options and only if the whole file validates. Does not run ranking and does not generate a report."""
+    _writable_case(actor, change_case_id)  # 404 if not owned; refused if archived
+    if not file.filename:
+        raise ValidationError("No file was selected.")
+    file_bytes = await read_upload_limited(file)
+    result = candidate_import_service.import_candidates(
+        actor.organization_id, change_case_id, file.filename, file_bytes, options)
+    # Counts and a file fingerprint only -- never candidate names or values.
+    audit_service.log(actor.organization_id, actor.user["id"], "candidate.import",
+                       detail=f"change_case_id={change_case_id} imported={result['imported_count']} "
+                              f"file_sha256={result['sha256'][:16]}")
     return result
 
 

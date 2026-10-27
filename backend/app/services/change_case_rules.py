@@ -510,39 +510,58 @@ def classify_candidate_domain_coverage(
 # ---------------------------------------------------------------------------
 # C1 -- decision support (categorical; derived ONLY from domain coverage)
 #
-# The GP's predicted_probability is a model output given the supplied
-# historical data, not a validated qualification probability. A candidate
-# far outside the historical range can still receive a numerically
-# maximal probability, so the probability alone must never be read as
-# approval. decision_support is a SEPARATE, purely categorical signal that
-# consumes the EXISTING domain-coverage status. It deliberately does NOT
-# look at predicted_probability, sigma, or any model-quality metric, adds
-# no numeric score, and introduces no second domain heuristic. The raw
-# probability, sigma and domain_coverage are never modified by it.
+# WHAT THIS SIGNAL IS: a per-feature range check. "within_data_range" means each input value lies inside the
+# [min, max] that feature has in the historical data -- one feature at a time. That is all it establishes. It is
+# NOT a joint applicability domain (a candidate inside every individual range can sit in a region of the combined
+# input space with no historical data), it says nothing about how accurate the model is for this candidate, it
+# is not physical evidence, it is not requirement compliance and it is not a qualification. An earlier version
+# called this state "evidence_supported"/"Evidence-supported", which read as if evidence supported the
+# candidate; a real validation run showed candidates in this state with severe misses, so the state is now
+# named for what it checks.
+#
+# The GP's predicted_probability is a model output given the supplied historical data, not a validated
+# qualification probability. decision_support is a SEPARATE, purely categorical signal that consumes the
+# EXISTING domain-coverage status. It deliberately does NOT look at predicted_probability, sigma, or any
+# model-quality metric, adds no numeric score, and introduces no second domain heuristic. A high probability or
+# a small sigma can therefore never change it. The raw probability, sigma and domain_coverage are never modified
+# by it. It is derived at read time and is never persisted, so no stored record can carry an older meaning.
 # ---------------------------------------------------------------------------
 
-DECISION_EVIDENCE_SUPPORTED = "evidence_supported"
+DECISION_WITHIN_DATA_RANGE = "within_data_range"
 DECISION_CAUTION = "caution"
 DECISION_REQUIRES_VALIDATION = "requires_validation"
 DECISION_SUPPORT_BASIS = "historical_domain_coverage"
+DECISION_SUPPORT_SCOPE = "per_feature_range_check"
+
+# What this signal does NOT establish. Returned with every status so the API, the report and any consumer
+# state the same limits from one definition.
+DECISION_NOT_ESTABLISHED = (
+    "joint_input_space_coverage",
+    "model_accuracy_for_this_candidate",
+    "physical_performance",
+    "requirement_compliance",
+    "qualification",
+)
 
 _DECISION_BY_DOMAIN_STATUS = {
-    DOMAIN_WITHIN: DECISION_EVIDENCE_SUPPORTED,
+    DOMAIN_WITHIN: DECISION_WITHIN_DATA_RANGE,
     DOMAIN_NEAR_EDGE: DECISION_CAUTION,
     DOMAIN_OUTSIDE: DECISION_REQUIRES_VALIDATION,
 }
 
 DECISION_LABELS = {
-    DECISION_EVIDENCE_SUPPORTED: "Evidence-supported",
+    DECISION_WITHIN_DATA_RANGE: "Within data range",
     DECISION_CAUTION: "Caution",
     DECISION_REQUIRES_VALIDATION: "Requires validation",
 }
 
 DECISION_STATEMENTS = {
-    DECISION_EVIDENCE_SUPPORTED: (
-        "Candidate lies within the observed range of every feature in the historical "
-        "data, so the model estimate interpolates observed evidence. Physical "
-        "validation is still required before any candidate is considered qualified."
+    DECISION_WITHIN_DATA_RANGE: (
+        "Every input of this candidate lies within that feature's range in the historical data. This is a "
+        "per-feature check only: it does not show that the combination of inputs is covered by the data, that "
+        "the model is accurate for this candidate, or that the candidate will perform as predicted. It is not "
+        "physical evidence and not a qualification. Physical validation is still required before any candidate is "
+        "considered qualified."
     ),
     DECISION_CAUTION: (
         "Candidate lies just beyond the observed range of at least one feature "
@@ -551,8 +570,7 @@ DECISION_STATEMENTS = {
     ),
     DECISION_REQUIRES_VALIDATION: (
         "Candidate lies outside the observed range of at least one feature. The "
-        "estimate is an extrapolation and is not evidence-supported for "
-        "qualification without physical validation."
+        "estimate is an extrapolation: physical validation is required before it is relied on."
     ),
 }
 
@@ -560,8 +578,7 @@ DECISION_STATEMENTS = {
 # unavailable / unrecognised. Status is still requires_validation (fail-safe).
 DECISION_STATEMENT_COVERAGE_UNAVAILABLE = (
     "Historical-range coverage could not be determined for this candidate, so the "
-    "model estimate is not evidence-supported for qualification without physical "
-    "validation."
+    "model estimate cannot be relied on without physical validation."
 )
 
 MODEL_ESTIMATE_NOTE = (
@@ -574,17 +591,16 @@ def derive_decision_support(domain_coverage, has_prediction: bool = True):
     """Categorical decision-support signal for one candidate.
 
     - no prediction                                  -> None
-    - prediction + within_historical_domain          -> evidence_supported
+    - prediction + within_historical_domain          -> within_data_range
     - prediction + near_edge_of_domain               -> caution
     - prediction + outside_historical_domain         -> requires_validation
     - prediction + coverage missing/unrecognised     -> requires_validation
-      (fail-safe: never defaults to evidence_supported)
+      (fail-safe: never defaults to within_data_range)
 
-    'evidence_supported' means ONLY that every feature lies within its
-    observed historical range (a per-feature check, not a joint
-    applicability domain). It does not mean qualified, validated, or
-    guaranteed to generalise. Pure: depends on nothing but the coverage
-    status -- not on probability, sigma, or model quality."""
+    'within_data_range' means ONLY that every feature lies within its observed historical range (a per-feature
+    check, not a joint applicability domain). It does not mean qualified, validated, accurate for this
+    candidate, or guaranteed to generalise -- see DECISION_NOT_ESTABLISHED. Pure: depends on nothing but the
+    coverage status -- not on probability, sigma, model quality or any recorded outcome."""
     if not has_prediction:
         return None
 
@@ -600,6 +616,8 @@ def derive_decision_support(domain_coverage, has_prediction: bool = True):
         return {
             "status": DECISION_REQUIRES_VALIDATION,
             "basis": DECISION_SUPPORT_BASIS,
+            "scope": DECISION_SUPPORT_SCOPE,
+            "not_established": list(DECISION_NOT_ESTABLISHED),
             "domain_status": None,
             "label": DECISION_LABELS[DECISION_REQUIRES_VALIDATION],
             "statement": DECISION_STATEMENT_COVERAGE_UNAVAILABLE,
@@ -608,6 +626,8 @@ def derive_decision_support(domain_coverage, has_prediction: bool = True):
     return {
         "status": status,
         "basis": DECISION_SUPPORT_BASIS,
+        "scope": DECISION_SUPPORT_SCOPE,
+        "not_established": list(DECISION_NOT_ESTABLISHED),
         "domain_status": domain_status,
         "label": DECISION_LABELS[status],
         "statement": DECISION_STATEMENTS[status],

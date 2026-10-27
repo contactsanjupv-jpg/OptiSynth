@@ -34,6 +34,46 @@ def create_candidate(organization_id: int, change_case_id: int, candidate_name: 
         return row["id"]
 
 
+def create_candidates_batch(organization_id: int, change_case_id: int, entries: list, guard) -> list:
+    """Stores several candidates in ONE transaction: all of them or none of them -- an error anywhere (a
+    failed guard, a database error on any row) rolls the whole batch back.
+
+    `entries` is [(name, properties_dict, input_json_or_None)]. `guard(case_row, existing_names)` is called
+    INSIDE the transaction, after the diagnostic's row has been locked, with the diagnostic as it is right now
+    and the names of every candidate it holds (removed ones included): it re-checks what the caller validated
+    earlier (still open, names still free), so two overlapping imports -- or an import and a manual add --
+    cannot both succeed with the same name. The no-op UPDATE below is what serialises them: it takes the write
+    lock on SQLite and a row lock on PostgreSQL. Returns the new candidate ids in order."""
+    with db_transaction() as conn:
+        locked = conn.execute(
+            text("UPDATE change_cases SET status = status WHERE id = :id AND organization_id = :org_id"),
+            {"id": change_case_id, "org_id": organization_id},
+        )
+        if locked.rowcount == 0:
+            raise LookupError("Change case not found.")
+        case = conn.execute(
+            text("SELECT * FROM change_cases WHERE id = :id AND organization_id = :org_id"),
+            {"id": change_case_id, "org_id": organization_id},
+        ).mappings().first()
+        names = [r[0] for r in conn.execute(
+            text("""SELECT candidate_name FROM candidate_substitutes
+                     WHERE organization_id = :org_id AND change_case_id = :case_id"""),
+            {"org_id": organization_id, "case_id": change_case_id}).all()]
+        guard(dict(case), names)
+        ids = []
+        for name, properties, input_json in entries:
+            row = conn.execute(
+                text("""INSERT INTO candidate_substitutes
+                         (organization_id, change_case_id, candidate_name, properties_json, input_json, created_at)
+                         VALUES (:org_id, :change_case_id, :name, :properties_json, :input_json, :created_at)
+                         RETURNING id"""),
+                {"org_id": organization_id, "change_case_id": change_case_id, "name": name,
+                 "properties_json": json.dumps(properties), "input_json": input_json, "created_at": now_iso()},
+            ).mappings().first()
+            ids.append(row["id"])
+        return ids
+
+
 def list_candidates_for_change_case(organization_id: int, change_case_id: int, include_archived: bool = False):
     """The diagnostic's candidates in id order. Candidates removed from the analysis (archived) are
     left out unless asked for: ranking, sufficiency and the default list never see them."""

@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Dialog } from "@/components/ui/Dialog";
 import { ErrorCallout, Spinner } from "@/components/ui/Feedback";
+import { CandidateImport } from "@/components/change-cases/CandidateImport";
 import { useRequireAuth } from "@/lib/auth/useRequireAuth";
 import {
   getChangeCase, addCandidate, listCandidates, listEvidence, getSufficiency, parseSpec,
@@ -32,7 +33,7 @@ function decisionTone(ds: DecisionSupport | null): "neutral" | "accent" | "warni
   if (!ds) return "warning"; // prediction exists but no decision-support signal: treat as unverified
   if (ds.status === "requires_validation") return "danger";
   if (ds.status === "caution") return "warning";
-  return "accent"; // evidence_supported: informational only, still requires physical validation
+  return "accent"; // within_data_range: a per-feature range check only; informational, still requires physical validation
 }
 
 const DOMAIN_STATUS_LABEL: Record<DomainStatus, string> = {
@@ -410,6 +411,10 @@ export default function ChangeCaseDetailPage() {
               Add candidate
             </Button>
           </form>
+          )}
+          {canEditCandidates && spec && (
+            <CandidateImport changeCaseId={changeCaseId} spec={spec}
+              onImported={(message) => { setNotice(message); load(); }} />
           )}
           <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "var(--text-xs)", color: "var(--color-text-secondary)", marginBottom: 8 }}>
             <input type="checkbox" checked={showRemoved} onChange={(e) => setShowRemoved(e.target.checked)} />

@@ -102,7 +102,7 @@ class TestStaleRankingLifecycle(IsolatedApiTestCase):
             self.assertEqual(c["latest_prediction"]["uncertainty_std"], before[name]["uncertainty_std"])
         # ...and coverage is still judged against A (existing, intended behaviour)
         self.assertEqual(after["PolyGuard"]["domain_coverage"]["status"], "within_historical_domain")
-        self.assertEqual(after["PolyGuard"]["decision_support"]["status"], "evidence_supported")
+        self.assertEqual(after["PolyGuard"]["decision_support"]["status"], "within_data_range")
 
     def test_a_candidate_added_after_the_new_upload_is_not_stale_just_unranked(self):
         org_id, client, case_id, a_id = self._setup("StaleNew")

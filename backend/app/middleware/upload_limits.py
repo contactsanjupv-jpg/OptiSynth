@@ -20,7 +20,7 @@ from backend.app.schemas.errors import ValidationError
 
 # The POST endpoints that accept a file. Anything else is not touched.
 UPLOAD_PATHS = (
-    re.compile(r"^/api/change-cases/\d+/(?:dataset|dataset/preview|evidence/extract)$"),
+    re.compile(r"^/api/change-cases/\d+/(?:dataset|dataset/preview|evidence/extract|candidates/import|candidates/import/preview)$"),
     re.compile(r"^/api/projects/\d+/dataset$"),
 )
 

@@ -310,17 +310,21 @@ export interface DomainCoverage {
   note: string;
 }
 
-export type DecisionSupportStatus = "evidence_supported" | "caution" | "requires_validation";
+export type DecisionSupportStatus = "within_data_range" | "caution" | "requires_validation";
 
 /**
  * Categorical decision support (backend C1), derived ONLY from domain
  * coverage. It is not a score and does not modify predicted_probability.
- * "evidence_supported" does NOT mean qualified -- physical validation is
+ * "within_data_range" is a per-feature range check only: it does NOT mean qualified -- physical validation is
  * still required for every candidate.
  */
 export interface DecisionSupport {
   status: DecisionSupportStatus;
   basis: string;
+  /** What the signal checks: "per_feature_range_check" -- never a joint-coverage, accuracy or physical-evidence check. */
+  scope?: string;
+  /** What the signal does NOT establish (joint coverage, accuracy for this candidate, performance, compliance, qualification). */
+  not_established?: string[];
   domain_status: DomainStatus | null;
   label: string;
   statement: string;
@@ -412,6 +416,70 @@ export function addCandidate(
   return apiRequest<{ id: number; candidate_name: string }>(`/api/change-cases/${changeCaseId}/candidates`, {
     method: "POST",
     json: { name, features, ...(units && Object.keys(units).length ? { units } : {}) },
+  });
+}
+
+// ---- Candidate CSV import (preview writes nothing; import is all-or-nothing and needs confirm: true) ----
+export interface CandidateImportOptions {
+  /** Column holding the candidate names (default on the server: "candidate_name"). */
+  name_column?: string;
+  /** {diagnostic field: column in the file}. Fields left out fall back to an exact header match only. */
+  column_mapping?: Record<string, string>;
+  /** Explicit unit of the file's values per field; converted only by an exact factor, never guessed. */
+  units?: Record<string, string>;
+  /** The user confirms every value not given an explicit unit is already in the diagnostic's own unit. */
+  confirm_canonical_units?: boolean;
+  /** Only honoured by the import endpoint. */
+  confirm?: boolean;
+}
+
+export interface CandidateImportProblem { row: number | null; column: string | null; message: string }
+
+export interface CandidateImportPreview {
+  filename: string;
+  sha256: string;
+  ok: boolean;
+  blocked_reason: string | null;
+  headers: string[];
+  row_count: number;
+  blank_rows_skipped: number;
+  name_column: string | null;
+  mapping: Record<string, string | null>;
+  suggested_mapping: Record<string, string | null>;
+  ignored_columns: string[];
+  expected_units: Record<string, string | null>;
+  units: Record<string, string>;
+  preview_rows: { row: number; name: string; ok: boolean; values: Record<string, string> }[];
+  would_import: number;
+  error_count: number;
+  errors: CandidateImportProblem[];
+}
+
+export interface CandidateImportResult {
+  imported_count: number;
+  candidates: { id: number; candidate_name: string }[];
+  sha256: string;
+  ranking_notice: string;
+}
+
+function candidateImportForm(file: File, options: CandidateImportOptions) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("options", JSON.stringify(options));
+  return formData;
+}
+
+export function previewCandidateImport(changeCaseId: number, file: File, options: CandidateImportOptions) {
+  return apiRequest<CandidateImportPreview>(`/api/change-cases/${changeCaseId}/candidates/import/preview`, {
+    method: "POST",
+    formData: candidateImportForm(file, options),
+  });
+}
+
+export function importCandidates(changeCaseId: number, file: File, options: CandidateImportOptions) {
+  return apiRequest<CandidateImportResult>(`/api/change-cases/${changeCaseId}/candidates/import`, {
+    method: "POST",
+    formData: candidateImportForm(file, { ...options, confirm: true }),
   });
 }
 

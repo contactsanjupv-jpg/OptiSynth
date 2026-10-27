@@ -14,7 +14,7 @@ THE RULE (one definition, used by the ranking run, the stored-prediction listing
 three can never disagree)
   Each candidate's evidence tier comes from decision_support, which is derived ONLY from the existing
   historical-range coverage check (change_case_rules.derive_decision_support):
-    evidence_supported  -> "ranked"                 every input inside the observed range
+    within_data_range   -> "ranked"                 every input inside the observed range (per feature)
     caution             -> "ranked_with_caution"    an input just beyond it (the product's heuristic edge
                                                     margin): ranked, but flagged provisional
     requires_validation -> "not_ranked_insufficient_evidence"
@@ -44,7 +44,7 @@ STATUS_NOT_RANKED = "not_ranked_insufficient_evidence"
 
 # evidence tier used as the tie-break after probability; lower sorts first. A candidate with no tier is not ranked.
 _TIER_BY_DECISION = {
-    change_case_rules.DECISION_EVIDENCE_SUPPORTED: 0,
+    change_case_rules.DECISION_WITHIN_DATA_RANGE: 0,
     change_case_rules.DECISION_CAUTION: 1,
 }
 _STATUS_BY_TIER = {0: STATUS_RANKED, 1: STATUS_RANKED_WITH_CAUTION}
@@ -58,9 +58,10 @@ ORDERING_RULE = (
 
 STATEMENTS = {
     STATUS_RANKED: (
-        "Ranked among candidates whose inputs lie within the range of the historical data. The position "
-        "reflects the model estimate, which is not a validated probability; physical validation is still "
-        "required before any candidate is considered qualified."
+        "Ranked among candidates whose inputs lie within the range of the historical data, checked one "
+        "feature at a time. The position reflects the model estimate, which is not a validated probability, "
+        "and the range check does not show the model is accurate for this candidate; physical validation is "
+        "still required before any candidate is considered qualified."
     ),
     STATUS_RANKED_WITH_CAUTION: (
         "Ranked provisionally: at least one input lies just beyond the observed range of the historical data "

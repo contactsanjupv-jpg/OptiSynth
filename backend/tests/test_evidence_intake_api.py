@@ -319,7 +319,7 @@ class TestEvidenceIntakeApi(unittest.TestCase):
         self.assertEqual(rk.status_code, 200, rk.text)
         by = {x["candidate_name"]: x for x in rk.json()}
         self.assertEqual(by["Outside"]["decision_support"]["status"], "requires_validation")
-        self.assertEqual(by["Inside"]["decision_support"]["status"], "evidence_supported")
+        self.assertEqual(by["Inside"]["decision_support"]["status"], "within_data_range")
         text_doc = self._docx_text(client.post(f"/api/change-cases/{case_id}/report").content)
         self.assertIn("Evidence intake review", text_doc)
         self.assertIn(hashlib.sha256(raw).hexdigest(), text_doc)

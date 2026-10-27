@@ -175,7 +175,7 @@ class TestQualificationReportDecisionSupport(unittest.TestCase):
         self.assertIn("100%", text)  # raw probability shown unchanged
         self.assertIn("2.261", text)
         self.assertIn("not a validated qualification probability", text)
-        self.assertIn("'Evidence-supported' does not mean qualified", text)
+        self.assertIn("'Within data range' does not mean qualified", text)
 
     def test_old_wording_removed(self):
         path = build_qualification_report(self._case(), [self._outside_result()], 15, "Acme",
