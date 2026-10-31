@@ -628,7 +628,7 @@ def _minimum_experiment_description(ranked_candidate: dict, target_value: float,
         description = (
             f"Run a physical qualification test against the target spec for '{ranked_candidate['name']}'. "
             f"The historical data does not cover this candidate's inputs, so the model cannot say whether it is "
-            f"likely to meet the requirement: its estimate ({prob:.0%}) is an extrapolation and is not used to "
+            f"likely to meet the requirement: its estimate ({change_case_rules.format_model_probability(prob)}) is an extrapolation and is not used to "
             f"rank it or to rule it in or out. Only physical validation can establish how it performs -- this "
             f"analysis does not replace running and recording the actual physical result."
         )
@@ -638,11 +638,12 @@ def _minimum_experiment_description(ranked_candidate: dict, target_value: float,
         elif prob >= 0.4:
             confidence_note = "moderate model-estimated probability -- validation is important before relying on this candidate"
         else:
-            confidence_note = "low model-estimated probability -- likely not worth physical validation unless no better candidate exists"
+            confidence_note = "low model-estimated probability -- the model rates this candidate below the others, but its estimates can be wrong in either direction; only physical validation can show how it performs"
         description = (
             f"Run a physical qualification test against the target spec for "
-            f"'{ranked_candidate['name']}' ({confidence_note}; model estimate "
-            f"{prob:.0%}). This analysis identifies which "
+            f"'{ranked_candidate['name']}' ({confidence_note}; model-estimated probability "
+            f"{change_case_rules.format_model_probability(prob)}, a model output rather than a measured or validated "
+            f"result). This analysis identifies which "
             f"candidate to test first -- it does not replace running and "
             f"recording the actual physical result."
         )

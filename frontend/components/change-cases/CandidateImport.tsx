@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { previewCandidateImport, importCandidates } from "@/lib/api";
 import { ApiRequestError } from "@/lib/api/http";
@@ -23,6 +23,12 @@ interface Props {
  * Import candidates from a CSV: choose file -> map columns -> state/confirm units -> check (nothing is stored)
  * -> confirm -> import. The server reads and validates the CSV (the browser never parses it), and an import is
  * all-or-nothing: any problem means nothing is stored, and the user fixes the source CSV and checks again.
+ *
+ * A check result and the final confirmation are valid ONLY for the exact settings they were made with (file, name
+ * column, column mapping, units, unit confirmation). Both are therefore tied to a settings key: change anything and
+ * the old result and confirmation stop applying until the user checks again. Answers from older checks are ignored.
+ * The first look at a file only PRE-FILLS the selectors from the server's suggestion; it is never treated as a check
+ * of those settings, so import stays disabled until the user has run "Check file" on the settings actually in effect.
  */
 export function CandidateImport({ changeCaseId, spec, onImported }: Props) {
   const [open, setOpen] = useState(false);
@@ -32,17 +38,31 @@ export function CandidateImport({ changeCaseId, spec, onImported }: Props) {
   const [units, setUnits] = useState<Record<string, string>>({});
   const [confirmUnits, setConfirmUnits] = useState(false);
   const [preview, setPreview] = useState<CandidateImportPreview | null>(null);
-  const [confirmImport, setConfirmImport] = useState(false);
+  const [checkedKey, setCheckedKey] = useState<string | null>(null); // the settings the shown preview was computed for
+  const [confirmedKey, setConfirmedKey] = useState<string | null>(null); // the settings the user confirmed
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const latestCheck = useRef(0); // only the newest check or file selection may update the panel
+  const [fileVersion, setFileVersion] = useState(0); // changes with every file selection, so a key is tied to one file
 
   const features = spec.feature_columns;
+
+  // Everything that changes what an import would do, in a stable form.
+  function settingsKey(nc: string, m: Record<string, string>, u: Record<string, string>, cu: boolean) {
+    return JSON.stringify([fileVersion, nc, features.map((f) => [m[f] ?? "", (u[f] ?? "").trim()]), cu]);
+  }
+  const currentKey = settingsKey(nameColumn, mapping, units, confirmUnits);
+  const previewCurrent = preview !== null && checkedKey === currentKey;
+  const confirmed = previewCurrent && confirmedKey === currentKey;
 
   function options(over: Partial<CandidateImportOptions> = {}): CandidateImportOptions {
     const explicitUnits = Object.fromEntries(Object.entries(units).filter(([, v]) => v.trim() !== ""));
     return {
-      ...(nameColumn ? { name_column: nameColumn } : {}),
-      column_mapping: Object.fromEntries(Object.entries(mapping).filter(([, v]) => v !== "")),
+      // Always explicit. Left out, "— choose —" would not mean unmapped: the server falls back to an exact header
+      // match for an omitted feature (and to "candidate_name" for an omitted name column). Only the first look at a
+      // file leaves them out, on purpose, to ask the server for its suggestion.
+      name_column: nameColumn,
+      column_mapping: Object.fromEntries(features.map((f) => [f, mapping[f] ?? ""])),
       units: explicitUnits,
       confirm_canonical_units: confirmUnits,
       ...over,
@@ -50,35 +70,47 @@ export function CandidateImport({ changeCaseId, spec, onImported }: Props) {
   }
 
   function reset() {
+    latestCheck.current += 1; // drop any answer still in flight
     setFile(null); setNameColumn(""); setMapping({}); setUnits({}); setConfirmUnits(false);
-    setPreview(null); setConfirmImport(false); setError(null);
+    setPreview(null); setCheckedKey(null); setConfirmedKey(null); setError(null);
   }
 
-  async function check(f: File, opts: CandidateImportOptions, firstLook: boolean) {
-    setBusy(true); setError(null); setConfirmImport(false);
+  // `keyAtRequest` is the settings key the request was made with. null means the first look at a new file: its answer
+  // only pre-fills the selectors and is NOT recorded as a check of any settings (checkedKey stays null).
+  async function check(f: File, opts: CandidateImportOptions, keyAtRequest: string | null) {
+    const mine = ++latestCheck.current;
+    setBusy(true); setError(null); setConfirmedKey(null);
     try {
       const p = await previewCandidateImport(changeCaseId, f, opts);
+      if (mine !== latestCheck.current) return; // a newer check or file replaced this one: ignore its answer
       setPreview(p);
-      if (firstLook) {
+      if (keyAtRequest === null) {
         // Pre-fill the selectors with what the server found (exact header matches only); the user can change them.
         setNameColumn(p.name_column ?? "");
         setMapping(Object.fromEntries(features.map((c) => [c, p.mapping[c] ?? ""])));
+        setCheckedKey(null);
+      } else {
+        setCheckedKey(keyAtRequest);
       }
     } catch (err) {
-      setPreview(null);
+      if (mine !== latestCheck.current) return;
+      setPreview(null); setCheckedKey(null);
       setError(err instanceof ApiRequestError ? err.message : "Could not read the file.");
     } finally {
-      setBusy(false);
+      if (mine === latestCheck.current) setBusy(false);
     }
   }
 
   function onFile(f: File | null) {
-    setFile(f); setPreview(null); setConfirmImport(false);
-    if (f) check(f, { confirm_canonical_units: false }, true);
+    latestCheck.current += 1; // a different file: nothing from the previous file or its settings carries over
+    setFileVersion((v) => v + 1);
+    setFile(f); setPreview(null); setCheckedKey(null); setConfirmedKey(null); setError(null);
+    setNameColumn(""); setMapping({}); setUnits({}); setConfirmUnits(false); setBusy(false);
+    if (f) check(f, { confirm_canonical_units: false }, null);
   }
 
   async function doImport() {
-    if (!file || !preview?.ok || !confirmImport) return;
+    if (!file || !preview?.ok || !confirmed || busy) return;
     setBusy(true); setError(null);
     try {
       const r = await importCandidates(changeCaseId, file, options());
@@ -102,7 +134,7 @@ export function CandidateImport({ changeCaseId, spec, onImported }: Props) {
   }
 
   const headers = preview?.headers ?? [];
-  const canImport = !!preview?.ok && confirmImport && !busy;
+  const canImport = !!preview?.ok && confirmed && !busy;
 
   return (
     <div style={{ border: "1px solid var(--color-border-strong)", borderRadius: "var(--radius-sm)", padding: 14, marginBottom: 16 }}>
@@ -135,7 +167,7 @@ export function CandidateImport({ changeCaseId, spec, onImported }: Props) {
               <span style={SMALL}>Diagnostic unit</span><span style={SMALL}>Unit of your values (optional)</span>
 
               <span style={SMALL}>candidate name</span>
-              <select aria-label="Candidate name column" value={nameColumn} style={FIELD} onChange={(e) => setNameColumn(e.target.value)}>
+              <select aria-label="Candidate name column" value={nameColumn} style={FIELD} onChange={(e) => { setNameColumn(e.target.value); setConfirmUnits(false); }}>
                 <option value="">— choose —</option>
                 {headers.filter(Boolean).map((h) => <option key={h} value={h}>{h}</option>)}
               </select>
@@ -144,8 +176,8 @@ export function CandidateImport({ changeCaseId, spec, onImported }: Props) {
               {features.map((f) => (
                 <FeatureRow key={f} field={f} headers={headers} column={mapping[f] ?? ""}
                   canonical={preview.expected_units[f] ?? null} unit={units[f] ?? ""}
-                  onColumn={(v) => setMapping((m) => ({ ...m, [f]: v }))}
-                  onUnit={(v) => setUnits((u) => ({ ...u, [f]: v }))} />
+                  onColumn={(v) => { setMapping((m) => ({ ...m, [f]: v })); setConfirmUnits(false); }}
+                  onUnit={(v) => { setUnits((u) => ({ ...u, [f]: v })); setConfirmUnits(false); }} />
               ))}
             </div>
             {preview.ignored_columns.length > 0 && (
@@ -167,10 +199,16 @@ export function CandidateImport({ changeCaseId, spec, onImported }: Props) {
           </div>
 
           <div style={{ marginTop: 12 }}>
-            <Button type="button" variant="secondary" size="sm" loading={busy} onClick={() => file && check(file, options(), false)}>
+            <Button type="button" variant="secondary" size="sm" loading={busy} onClick={() => file && check(file, options(), currentKey)}>
               Check file
             </Button>
           </div>
+
+          {!previewCurrent && !busy && (
+            <p role="alert" style={{ ...SMALL, color: "#78350f", marginTop: 10 }}>
+              The result below was not checked against the settings now in effect. Click Check file before importing.
+            </p>
+          )}
 
           <div style={{ marginTop: 14 }} aria-live="polite">
             <strong style={{ fontSize: "var(--text-xs)" }}>3. Result of the check</strong>
@@ -223,8 +261,8 @@ export function CandidateImport({ changeCaseId, spec, onImported }: Props) {
 
           <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--color-border)" }}>
             <label style={{ ...SMALL, display: "flex", gap: 6, alignItems: "flex-start" }}>
-              <input type="checkbox" checked={confirmImport} disabled={!preview.ok}
-                onChange={(e) => setConfirmImport(e.target.checked)} />
+              <input type="checkbox" checked={confirmed} disabled={!preview.ok || !previewCurrent}
+                onChange={(e) => setConfirmedKey(e.target.checked ? currentKey : null)} />
               <span>
                 I have reviewed the mapping, the units and the rows above and want to import {preview.would_import} candidate
                 {preview.would_import === 1 ? "" : "s"} into this diagnostic. They will not be ranked automatically.

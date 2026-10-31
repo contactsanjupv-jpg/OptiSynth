@@ -53,7 +53,8 @@ class TestReportRecommendationsUseTheLatestRanking(IsolatedApiTestCase):
 
     @staticmethod
     def _pct(p):
-        return f"{p:.0%}"
+        from backend.app.services.change_case_rules import format_model_probability
+        return format_model_probability(p)
 
     def _report(self, client, case_id):
         """-> (ranked_table {name: 'NN%'}, recommendations {name: full text}) read from the real DOCX."""
@@ -83,10 +84,11 @@ class TestReportRecommendationsUseTheLatestRanking(IsolatedApiTestCase):
         return ranked, recs
 
     def _estimate_in(self, text):
-        # ranked candidates: "... model estimate 85%)"; unranked (extrapolated) ones: "... its estimate (85%) is ..."
-        m = re.search(r"model estimate (\d+)%|its estimate \((\d+)%\)", text)
+        # ranked candidates: "... model-estimated probability 85%, a model output ..."; unranked (extrapolated) ones:
+        # "... its estimate (85%) is ...". Extremes are displayed as a bound ("≥99%" / "≤1%"), never 100% / 0%.
+        m = re.search(r"model-estimated probability ([^\s,]+),|its estimate \(([^)\s]+)\)", text)
         self.assertIsNotNone(m, text)
-        return f"{m.group(1) or m.group(2)}%"
+        return m.group(1) or m.group(2)
 
     # ------------------------------------------------------------------
     def test_the_two_rankings_really_differ_so_the_test_is_meaningful(self):

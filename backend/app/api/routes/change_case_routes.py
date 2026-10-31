@@ -23,7 +23,7 @@ from backend.app.schemas.change_case_schemas import (
 from backend.app.services import (
     change_case_service, change_case_lifecycle_service, change_case_lifecycle_rules,
     candidate_lifecycle_service, candidate_lifecycle_rules,
-    qualification_dataset_service, candidate_import_service, audit_service,
+    qualification_dataset_service, candidate_import_service, audit_service, report_filename,
 )
 from backend.app.repositories import change_case_repo, candidate_repo, organizations_repo
 from backend.app.api.dependencies import get_current_actor, AuthContext
@@ -320,13 +320,20 @@ async def record_outcome(change_case_id: int, candidate_id: int, body: RecordOut
 
 @router.post("/{change_case_id}/report")
 async def generate_report(change_case_id: int, actor: AuthContext = Depends(get_current_actor)):
-    change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)  # 404 if not owned
+    case = change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)  # 404 if not owned
     org = organizations_repo.get_organization(actor.organization_id)
     file_path = change_case_service.generate_report(actor.organization_id, change_case_id, org["name"])
     audit_service.log(actor.organization_id, actor.user["id"], "change_case.report_generate",
                        detail=f"change_case_id={change_case_id}")
+    # The ranking run the report describes = the newest prediction timestamp (one shared stamp per run).
+    stamps = []
+    for c in candidate_repo.list_candidates_for_change_case(actor.organization_id, change_case_id):
+        p = candidate_repo.get_latest_prediction_for_candidate(actor.organization_id, c["id"])
+        if p:
+            stamps.append(p["created_at"])
+    run_id = report_filename.latest_run_identifier(stamps)
     return FileResponse(
         file_path,
-        filename=f"qualification_diagnostic_{change_case_id}.docx",
+        headers={"Content-Disposition": report_filename.content_disposition(case["name"], change_case_id, run_id)},
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )

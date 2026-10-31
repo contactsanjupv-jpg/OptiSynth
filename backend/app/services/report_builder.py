@@ -12,6 +12,7 @@ from docx import Document
 from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+from backend.app.services import change_case_rules
 from backend.app.services import ranking_evidence_rules as evidence_rules
 
 REPORTS_ROOT = os.path.join(os.path.dirname(__file__), "..", "..", "..", "reports", "generated")
@@ -94,7 +95,8 @@ INSUFFICIENT_EVIDENCE_STATEMENT = "Insufficient evidence to establish predictive
 # C1: wording shown beneath the ranked-candidates table.
 MODEL_ESTIMATE_NOTE = (
     "Model-estimated probability is the model's output given the supplied "
-    "historical data. It is not a validated qualification probability."
+    "historical data. It is not a validated qualification probability. "
+    + change_case_rules.PROBABILITY_DISPLAY_NOTE
 )
 DECISION_SUPPORT_EXPLANATION = (
     "Decision support is a separate, categorical signal derived only from whether each "
@@ -439,7 +441,7 @@ def _add_recorded_outcomes(doc, ctx):
         row[0].text = o["candidate_name"]
         if o.get("model_probability") is not None:
             made = f" (estimated {o['estimate_made_at']})" if o.get("estimate_made_at") else ""
-            row[1].text = f"{o['model_probability']:.0%}{made}"
+            row[1].text = f"{change_case_rules.format_model_probability(o['model_probability'])}{made}"
         else:
             row[1].text = o.get("comparison_note") or "Not ranked"
         row[2].text = o["actual_result"] or ""
@@ -491,7 +493,7 @@ def _add_unranked_section(doc, unranked_results, spec, target_unit, unit_phrase)
         values = [
             r["candidate_name"],
             "Not recorded" if r.get("predicted_value") is None else format_predicted_value(r["predicted_value"]),
-            f"{r['predicted_probability']:.0%}",
+            change_case_rules.format_model_probability(r["predicted_probability"]),
             f"{r['uncertainty_std']:.3f}",
             DOMAIN_COVERAGE_LABELS[cov["status"]] if cov else "Not assessed",
             ds["label"] if ds else "Not assessed",
@@ -603,7 +605,7 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
                         values.append("Not recorded")
                     else:
                         values.append(format_predicted_value(r["predicted_value"]))
-                values.append(f"{r['predicted_probability']:.0%}")
+                values.append(change_case_rules.format_model_probability(r["predicted_probability"]))
                 values.append(f"{r['uncertainty_std']:.3f}")
                 if show_coverage:
                     cov = r.get("domain_coverage")

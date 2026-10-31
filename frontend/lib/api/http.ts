@@ -29,10 +29,24 @@ interface RequestOptions {
   formData?: FormData;
   /** For endpoints returning a binary file (e.g. report download). */
   expectBlob?: boolean;
+  /** Like expectBlob, but also returns the file name the server chose (Content-Disposition), or null. */
+  expectFile?: boolean;
+}
+
+/** File name from a Content-Disposition header; prefers the UTF-8 `filename*` form. */
+export function filenameFromDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  const encoded = star?.[1];
+  if (encoded) {
+    try { return decodeURIComponent(encoded.trim()); } catch { /* fall through */ }
+  }
+  const plain = /filename="([^"]+)"/i.exec(header);
+  return plain?.[1] ?? null;
 }
 
 export async function apiRequest<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const { method = "GET", json, formData, expectBlob = false } = opts;
+  const { method = "GET", json, formData, expectBlob = false, expectFile = false } = opts;
 
   const headers: Record<string, string> = {};
   if (json !== undefined) {
@@ -56,6 +70,10 @@ export async function apiRequest<T>(path: string, opts: RequestOptions = {}): Pr
     throw new ApiRequestError(res.status, body);
   }
 
+  if (expectFile) {
+    const filename = filenameFromDisposition(res.headers.get("Content-Disposition"));
+    return { blob: await res.blob(), filename } as unknown as T;
+  }
   if (expectBlob) {
     return (await res.blob()) as unknown as T;
   }

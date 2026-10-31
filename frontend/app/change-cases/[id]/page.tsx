@@ -20,6 +20,7 @@ import {
   updateCandidate, archiveCandidate, restoreCandidate, deleteCandidate,
 } from "@/lib/api";
 import { ApiRequestError } from "@/lib/api/http";
+import { formatModelProbability } from "@/lib/utils/format";
 import type {
   ChangeCase, Candidate, CandidateUpdate, DecisionSupport, DomainStatus, EvidenceInventoryItem,
   QualificationSpec, Sufficiency,
@@ -47,9 +48,13 @@ function formatPredictedValue(v: number): string {
   return String(Number(v.toPrecision(4)));
 }
 
+const PROBABILITY_DISPLAY_NOTE =
+  "The percentage is the chance, under the model's own normal-distribution assumption, that the predicted value meets the requirement; its stated uncertainty is not a validated error bound. Values of 99% or more are shown as ≥99% and values of 1% or less as ≤1%: a displayed figure is never 100% or 0%, and no figure here is a guarantee or a measured result.";
+
 const MODEL_ESTIMATE_NOTE =
   "Model-estimated probability is the model's output given the supplied historical data. " +
-  "It is not a validated qualification probability.";
+  "It is not a validated qualification probability. " +
+  PROBABILITY_DISPLAY_NOTE;
 
 type CandidateDialog = { kind: "edit" | "delete" | "remove"; c: Candidate } | null;
 
@@ -285,11 +290,11 @@ export default function ChangeCaseDetailPage() {
   async function handleDownloadReport() {
     setError(null); setGeneratingReport(true);
     try {
-      const blob = await generateQualificationReport(changeCaseId);
+      const { blob, filename } = await generateQualificationReport(changeCaseId);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `qualification_diagnostic_${changeCaseId}.docx`;
+      a.download = filename ?? `qualification_diagnostic_${changeCaseId}.docx`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -485,8 +490,8 @@ export default function ChangeCaseDetailPage() {
                       {staleInputs && <div style={{ marginBottom: 4 }}><Badge tone="danger">PREVIOUS INPUTS</Badge></div>}
                       {c.prediction_stale && <div style={{ marginBottom: 4 }}><Badge tone="danger">STALE</Badge></div>}
                       <Badge tone={staleInputs ? "neutral" : decisionTone(c.decision_support)}>
-                        Model estimate{c.ranking_status === NOT_RANKED ? " (extrapolation)" : ""}{" "}
-                        {Math.round(c.latest_prediction.predicted_probability * 100)}%
+                        Model-estimated probability{c.ranking_status === NOT_RANKED ? " (extrapolation)" : ""}{" "}
+                        {formatModelProbability(c.latest_prediction.predicted_probability)}
                       </Badge>
                       <div style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)", marginTop: 4 }}>
                         uncertainty (std): {c.latest_prediction.uncertainty_std.toFixed(1)}{targetUnit ? ` ${targetUnit}` : ""}

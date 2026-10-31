@@ -172,7 +172,8 @@ class TestQualificationReportDecisionSupport(unittest.TestCase):
         self.assertIn("Decision support", text)
         self.assertIn("Requires validation", text)
         self.assertIn("Outside historical range", text)
-        self.assertIn("100%", text)  # raw probability shown unchanged
+        self.assertIn("\u226599%", text)  # a probability of ~1.0 is displayed as a bound, never as "100%"
+        self.assertNotIn("100%", text.replace("never 100% or 0%", ""))
         self.assertIn("2.261", text)
         self.assertIn("not a validated qualification probability", text)
         self.assertIn("'Within data range' does not mean qualified", text)

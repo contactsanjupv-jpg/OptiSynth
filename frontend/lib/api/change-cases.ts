@@ -553,8 +553,8 @@ export function recordOutcome(
 }
 
 export function generateQualificationReport(changeCaseId: number) {
-  return apiRequest<Blob>(`/api/change-cases/${changeCaseId}/report`, {
+  return apiRequest<{ blob: Blob; filename: string | null }>(`/api/change-cases/${changeCaseId}/report`, {
     method: "POST",
-    expectBlob: true,
+    expectFile: true,
   });
 }

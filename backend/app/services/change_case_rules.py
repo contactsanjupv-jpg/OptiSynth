@@ -586,6 +586,34 @@ MODEL_ESTIMATE_NOTE = (
     "historical data. It is not a validated qualification probability."
 )
 
+# How predicted_probability is DISPLAYED. The stored and API value is never altered. What it is: P(the prediction
+# meets the requirement) under the Gaussian predictive distribution N(mu, sigma) of the model
+# (engine/optimization/rank_candidates.py, _probability_meets_target) -- not a measured, calibrated or validated
+# probability, and at the extremes it rests entirely on the model's tail assumptions. Rounding to a whole percent
+# turned every value of 99.5% or more into "100%", which reads as certainty, so the extremes are shown as a bound
+# and 100% / 0% are never printed. This limits how the number is presented; it does not make it more accurate.
+PROBABILITY_DISPLAY_CEILING = 0.99
+PROBABILITY_DISPLAY_FLOOR = 0.01
+PROBABILITY_DISPLAY_NOTE = (
+    "The percentage is the chance, under the model's own normal-distribution assumption, that the predicted value "
+    "meets the requirement; its stated uncertainty is not a validated error bound. Values of 99% or more are shown "
+    "as \u226599% and values of 1% or less as \u22641%: a displayed figure is never 100% or 0%, and no figure here "
+    "is a guarantee or a measured result."
+)
+
+
+def format_model_probability(probability) -> str:
+    """Display text for a model-estimated probability (a fraction in [0, 1]). Never returns 100% or 0%."""
+    # Anything that is not a real number in [0, 1] (None, text, bool, NaN, infinity, out of range) is not a probability:
+    # it is never shown as a percentage or as a bound.
+    if isinstance(probability, bool) or not isinstance(probability, (int, float)) or not (0.0 <= probability <= 1.0):
+        return "not available"
+    if probability >= PROBABILITY_DISPLAY_CEILING:
+        return "\u226599%"
+    if probability <= PROBABILITY_DISPLAY_FLOOR:
+        return "\u22641%"
+    return f"{probability:.0%}"
+
 
 def derive_decision_support(domain_coverage, has_prediction: bool = True):
     """Categorical decision-support signal for one candidate.

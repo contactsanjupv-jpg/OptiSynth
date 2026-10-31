@@ -22,6 +22,7 @@ import csv
 import io
 import json
 import os
+import pathlib
 import unittest
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production")
@@ -316,6 +317,38 @@ class TestColumnProblems(ImportApiBase):
         r = self.imp(client, case_id, content, opts)
         self.assertEqual(r.status_code, 400)
         self.assertEqual(len(self.stored(org_id, case_id)), 0)
+
+    def test_a_deliberately_cleared_mapping_is_rejected_not_inferred(self):
+        # The file really has a column named cure_temp_c. An OMITTED field is mapped to it by exact header (the
+        # documented default for API clients), so the panel must send "" for a field the user cleared: an explicit
+        # empty mapping means unmapped and is refused.
+        org_id, client, case_id = self.setup_case("Cleared")
+        content = make_csv([("A", 0.1, 150), ("B", 0.12, 160)])
+        base = {"crosslinker_ratio": "crosslinker_ratio"}
+        omitted = self.preview_errors(client, case_id, content, {**PREVIEW_OK, "column_mapping": base})
+        self.assertTrue(omitted["ok"], omitted["errors"])
+        self.assertEqual(omitted["mapping"]["cure_temp_c"], "cure_temp_c")  # inferred only because it was omitted
+        for cleared in ("", None):
+            opts = {**CONFIRM, "column_mapping": {**base, "cure_temp_c": cleared}}
+            p = self.preview_errors(client, case_id, content, opts)
+            self.assertFalse(p["ok"], cleared)
+            self.assertIsNone(p["mapping"]["cure_temp_c"], "a cleared field must not be inferred from the header")
+            self.assertTrue(any("No column in the file is mapped to the field 'cure_temp_c'" in e["message"]
+                                for e in p["errors"]), p["errors"])
+            r = self.imp(client, case_id, content, opts)
+            self.assert_refused_nothing_stored(org_id, case_id, r, "Nothing was imported",
+                                               "No column in the file is mapped to the field 'cure_temp_c'")
+
+    def test_a_deliberately_cleared_name_column_is_rejected_not_defaulted(self):
+        org_id, client, case_id = self.setup_case("ClearedName")
+        content = make_csv([("A", 0.1, 150)])  # has a candidate_name column; omitting name_column would use it
+        self.assertTrue(self.preview_errors(client, case_id, content, PREVIEW_OK)["ok"])
+        opts = {**CONFIRM, "name_column": ""}
+        p = self.preview_errors(client, case_id, content, opts)
+        self.assertFalse(p["ok"])
+        self.assertIsNone(p["name_column"])
+        r = self.imp(client, case_id, content, opts)
+        self.assert_refused_nothing_stored(org_id, case_id, r, "Nothing was imported", "Choose which column holds the candidate names")
 
     def test_ragged_row_is_reported_with_its_row_number(self):
         org_id, client, case_id = self.setup_case("Ragged")
@@ -675,6 +708,22 @@ class TestSizeLimits(ImportApiBase):
         self.assertIn(r.status_code, (400, 413), r.text[:200])
         self.assertIn("too large", r.json()["error"])
         self.assertEqual(self.stored(org_id, case_id), [])
+
+
+class TestPanelSendsExplicitMapping(unittest.TestCase):
+    """Source-level guard (the repository has no JS test runner): the panel's request builder must not drop an
+    unmapped feature or an empty name column, or "— choose —" would silently fall back to a header match. The
+    behaviour itself is exercised by the interaction scenarios shipped separately (candidate_import_ui_tests.zip)."""
+
+    def test_options_always_send_every_feature_and_the_name_column(self):
+        path = pathlib.Path(__file__).resolve().parents[2] / "frontend/components/change-cases/CandidateImport.tsx"
+        if not path.is_file():
+            self.skipTest("frontend sources are not part of this checkout")
+        text = path.read_text(encoding="utf-8")
+        self.assertRegex(text, r'column_mapping:\s*Object\.fromEntries\(features\.map\(\(f\) => \[f, mapping\[f\] \?\? ""\]\)\)')
+        self.assertRegex(text, r"name_column:\s*nameColumn,")
+        self.assertNotIn('filter(([, v]) => v !== "")', text, "empty mapping entries must not be filtered out")
+        self.assertNotIn("...(nameColumn ?", text, "an empty name column must not be omitted")
 
 
 if __name__ == "__main__":

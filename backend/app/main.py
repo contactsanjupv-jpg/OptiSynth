@@ -56,6 +56,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type"],
+        expose_headers=["Content-Disposition"],
     )
     app.add_middleware(SecurityHeadersMiddleware)
     # Refuses an oversized file upload before the application reads it (see middleware/upload_limits.py).

@@ -4098,7 +4098,8 @@ class TestChangeCaseApi(unittest.TestCase):
         self.assertIn("Requires validation", text)
         self.assertIn("Within data range", text)
         self.assertIn("Outside historical range", text)
-        self.assertIn(f"{ranked['Far']['predicted_probability']:.0%}", text)  # raw probability unchanged
+        from backend.app.services.change_case_rules import format_model_probability
+        self.assertIn(format_model_probability(ranked['Far']['predicted_probability']), text)  # same number, displayed safely
         self.assertIn(f"{ranked['Far']['uncertainty_std']:.3f}", text)
         self.assertIn("not a validated qualification probability", text)
         self.assertNotIn("Predicted qualification probability", text)
@@ -4150,7 +4151,8 @@ class TestChangeCaseApi(unittest.TestCase):
         self.assertIn("Recorded physical validation outcomes", text)
         self.assertIn("measured 61 on 3 panels", text)
         self.assertIn("Recorded as meeting requirement", text)
-        self.assertIn(f"{ranked['Far']['predicted_probability']:.0%}", text)
+        from backend.app.services.change_case_rules import format_model_probability
+        self.assertIn(format_model_probability(ranked['Far']['predicted_probability']), text)
         after = {x["candidate_name"]: x for x in client.get(f"/api/change-cases/{case_id}/candidates").json()}
         self.assertEqual(after["Far"]["latest_prediction"]["predicted_probability"],
                          ranked["Far"]["predicted_probability"])
