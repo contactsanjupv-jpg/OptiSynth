@@ -67,7 +67,7 @@ def build_project_report(project: dict, backtest: dict, recommendations: list,
         hdr = rec_table.rows[0].cells
         hdr[0].text = "Rank"
         hdr[1].text = "Predicted Value"
-        hdr[2].text = "Confidence"
+        hdr[2].text = "Model-estimated probability"
         hdr[3].text = "Key Variables"
         for i, rec in enumerate(recommendations, start=1):
             row = rec_table.add_row().cells
@@ -79,7 +79,8 @@ def build_project_report(project: dict, backtest: dict, recommendations: list,
     disclaimer = doc.add_paragraph()
     disclaimer.add_run(
         "This report reflects a retrospective backtest on the customer's own historical "
-        "data, not new physical experiments. See the Model Performance page for "
+        "data, not new physical experiments. The probability column is the model's own estimate, "
+        "not a measured or validated success rate. See the Model Performance page for "
         "cross-validated prediction-quality metrics."
     ).font.size = Pt(9)
 
@@ -111,6 +112,17 @@ CROSS_VALIDATION_CAVEAT = (
     "These cross-validation figures use folds assigned at random by row. Repeated formulations (replicate "
     "rows) can therefore fall on both sides of a split, so they can be more optimistic than performance on "
     "new batches. They are not a test of this model on candidates it has not seen."
+)
+
+GROUPED_CROSS_VALIDATION_CAVEAT = (
+    "These cross-validation figures keep rows with identical inputs (replicates) together, so each scored point is "
+    "an input set the model was not fitted on. Near-identical formulations are not grouped, no batch or lot "
+    "identifier is used, and the test uses only this dataset: it is not a test on new batches, other suppliers or "
+    "other customers' materials."
+)
+CALIBRATION_REFERENCE_NOTE = (
+    "For a well-calibrated normal predictive distribution these would be about 68% and 95%. Lower figures mean the "
+    "stated uncertainty is too small."
 )
 
 RANKING_ORDER_NOTE = evidence_rules.ORDERING_RULE
@@ -675,7 +687,19 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
                 f"heuristic tolerance band of 10% of this dataset's observed target range -- not an "
                 f"engineering acceptance threshold)."
             )
-            doc.add_paragraph(CROSS_VALIDATION_CAVEAT).runs[0].font.size = Pt(9)
+            caveat = (GROUPED_CROSS_VALIDATION_CAVEAT if model_quality.get("cv_scheme") == "grouped"
+                      else CROSS_VALIDATION_CAVEAT)
+            doc.add_paragraph(caveat).runs[0].font.size = Pt(9)
+            fit = model_quality.get("fit_diagnostics") or {}
+            if fit.get("n_convergence_warnings") or fit.get("n_fits_with_hyperparameter_at_bound"):
+                doc.add_paragraph(
+                    f"Model-fitting note: across {fit['n_fits']} cross-validation fits, the optimiser reported a "
+                    f"convergence warning in {fit['n_convergence_warnings']}, a model setting reached its allowed "
+                    f"limit in {fit['n_fits_with_hyperparameter_at_bound']}, and the noise estimate reached its "
+                    f"minimum in {fit.get('n_fits_noise_at_lower_bound', 0)} (which treats the data as almost "
+                    f"noise-free and tends to make predicted uncertainty too small). The figures above may be "
+                    f"less reliable than they look."
+                ).runs[0].font.size = Pt(9)
             if uncertainty_calibration and "error" not in uncertainty_calibration:
                 if uncertainty_calibration.get("sigma_error_correlation_defined", True):
                     correlation_text = (
@@ -692,7 +716,7 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
                     f"and actual held-out error = {correlation_text}; "
                     f"{uncertainty_calibration['within_1sigma_pct']}% of held-out points fell "
                     f"within 1 predicted standard deviation, "
-                    f"{uncertainty_calibration['within_2sigma_pct']}% within 2."
+                    f"{uncertainty_calibration['within_2sigma_pct']}% within 2. " + CALIBRATION_REFERENCE_NOTE
                 )
             elif uncertainty_calibration and "error" in uncertainty_calibration:
                 doc.add_paragraph(

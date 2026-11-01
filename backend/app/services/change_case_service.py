@@ -400,6 +400,14 @@ def _assess_dataset_quality(spec: dict, dataset: dict, experiments: list) -> dic
     }
 
 
+def _replicate_groups(fit_rows: list, feature_columns: list) -> list:
+    """One integer label per row; rows with IDENTICAL input values share a label. This is the same definition of
+    'same input set' the intake conflict check uses. It is the only grouping the data supports: no batch or lot
+    identifier is stored, and near-identical (not equal) formulations are NOT grouped."""
+    labels = {}
+    return [labels.setdefault(tuple(r["features"][c] for c in feature_columns), len(labels)) for r in fit_rows]
+
+
 def _compute_evidence_metrics(spec: dict, experiments: list) -> tuple:
     """Priority 7B: cross-validated model-quality and uncertainty-
     calibration metrics, recomputed here rather than persisted -- report
@@ -418,9 +426,10 @@ def _compute_evidence_metrics(spec: dict, experiments: list) -> tuple:
     X = np.array([[r["features"][col] for col in feature_columns] for r in fit_rows])
     y = np.array([r["target_value"] for r in fit_rows])
     from engine.facade import compute_model_metrics, compute_uncertainty_calibration
-    model_quality = compute_model_metrics(X, y)
+    groups = _replicate_groups(fit_rows, feature_columns)
+    model_quality = compute_model_metrics(X, y, groups=groups)
     uncertainty_calibration = (
-        compute_uncertainty_calibration(X, y) if "error" not in model_quality else None
+        compute_uncertainty_calibration(X, y, groups=groups) if "error" not in model_quality else None
     )
     return model_quality, uncertainty_calibration
 
@@ -520,9 +529,10 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
     y = np.array([r["target_value"] for r in fit_rows])
 
     from engine.facade import compute_model_metrics, compute_uncertainty_calibration
-    model_quality = compute_model_metrics(X, y)
+    groups = _replicate_groups(fit_rows, feature_columns)
+    model_quality = compute_model_metrics(X, y, groups=groups)
     uncertainty_calibration = (
-        compute_uncertainty_calibration(X, y) if "error" not in model_quality else None
+        compute_uncertainty_calibration(X, y, groups=groups) if "error" not in model_quality else None
     )
 
     # Candidates cross the engine boundary with their database id. Identity is never

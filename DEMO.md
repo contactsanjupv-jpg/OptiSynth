@@ -54,16 +54,18 @@ Open `http://localhost:3000`, log in with the demo credentials above.
 3. **(2 min) Show the candidates.** Four named PFAS-free alternatives, each with different formulation parameters. If you want to show live input, delete one and re-add it here instead of just pointing at existing ones.
 
 4. **(3 min) The core moment -- click "Run ranking."** Walk through the result:
-   - **PolyGuard NF-22: ~88% predicted, moderate uncertainty.** "This is your strongest bet -- test this first."
-   - **EcoShield SF-100: ~59% predicted, but nearly double the uncertainty of PolyGuard.** This is the most important line to explain out loud: *"This candidate's raw prediction is actually decent, but it sits outside the range of formulations we have real historical data for -- so the model is honestly telling you it's less sure, not just giving you a lower number."* This is the single best moment to demonstrate that the tool isn't a black box guessing at confidence -- it's a calibrated model that knows what it doesn't know.
-   - **HydroFlex and GreenCoat: ~0%.** "Both of these are predicted to fall well short of spec based on how similar formulations performed historically -- probably not worth committing lab time to unless nothing else works out."
+   - **PolyGuard NF-22: ~88% model-estimated probability, moderate uncertainty.** "The model ranks this first, so it is a reasonable candidate to test first -- the number is the model's estimate, not a measured success rate."
+   - **EcoShield SF-100: ~59% predicted, but nearly double the uncertainty of PolyGuard.** This is the most important line to explain out loud: *"This candidate's raw prediction is actually decent, but it sits outside the range of formulations we have real historical data for -- so the model is honestly telling you it's less sure, not just giving you a lower number."* This is the best moment to show that the tool is not a black box: the model's uncertainty widens outside the historical range, and the report flags it. Say plainly that this uncertainty is the model's own spread, not a proven error bound, and point to the report's cross-validation figures rather than claiming the model is calibrated.
+   - **HydroFlex and GreenCoat: ~0%.** "The model rates both of these lowest, based on how similar formulations performed historically. Its estimates can be wrong in either direction, so this sets the order of testing -- it does not rule anything out. Only a physical test settles it."
 
 5. **(1 min) Recommended experiments.** Show that each candidate has a specific next physical step recommended -- and point out the report language explicitly: *this identifies what to test first, it doesn't replace running and recording the real test.*
 
-6. **(1 min) Download the report.** Open the generated `.docx` -- show the ranked table and, specifically, the disclaimer paragraph distinguishing model prediction from physical validation. This is worth reading aloud once: it's the sentence that makes this defensible to show an auditor or an OEM, not just internally useful.
+6. **(1 min) Download the report.** Open the generated `.docx` -- show the ranked table and, specifically, the disclaimer paragraph distinguishing model prediction from physical validation. This is worth reading aloud once: it states what the analysis does and does not establish, and that the qualification decision stays with the customer's own qualification personnel.
 
 ## What NOT to claim during the demo
 
 - Never say physical qualification is complete or fast -- the diagnostic is the analysis, not the lab work.
 - Never say the prediction is guaranteed or 100% accurate -- the whole value of the uncertainty column is that it's honest about what isn't known yet.
+- Never describe the percentages as validated or calibrated success rates, or say the model is calibrated: they are model outputs, and the historical fit does not show performance on new formulations.
+- Never suggest a low-ranked candidate should be dropped without testing, or that a candidate is qualified before a physical test result is recorded.
 - If asked "how is this different from what our own R&D team already does," the honest answer demonstrated live: it's not replacing their formulation science, it's replacing the *guesswork in deciding which candidate to spend limited physical-testing time on first* -- using their own historical data, not a generic industry model.

@@ -175,7 +175,10 @@ class TestStatusThroughTheApplication(IsolatedApiTestCase):
         self.assertIn("checked one feature at a time", text)
         self.assertIn("does not show that the combination of inputs is covered by the historical data", text)
         self.assertIn("is not physical evidence", text)
-        self.assertIn(report_builder.CROSS_VALIDATION_CAVEAT, text)
+        # Level 2: the report is produced with replicate-aware folds, so it carries the grouped-validation caveat
+        # (the random-row caveat would now be untrue for it).
+        self.assertIn(report_builder.GROUPED_CROSS_VALIDATION_CAVEAT, text)
+        self.assertNotIn(report_builder.CROSS_VALIDATION_CAVEAT, text)
         for retired in RETIRED:
             self.assertNotIn(retired, text)
 

@@ -7,6 +7,10 @@ Performance" product page.
 import numpy as np
 
 from engine.models.surrogate import build_surrogate
+import warnings
+
+from sklearn.exceptions import ConvergenceWarning
+
 from engine.preprocessing.normalization import feature_bounds, normalize
 
 # The "prediction accuracy" band: a held-out prediction counts as inside it when its error is at most this
@@ -17,6 +21,77 @@ ACCURACY_TOLERANCE_NOTE = (
     "Heuristic descriptive band: 10% of this dataset's observed target range. It is not an engineering "
     "acceptance threshold."
 )
+
+
+MIN_GROUPS_FOR_GROUPED_CV = 6
+NOISE_LOWER_BOUND = 1e-4  # must match WhiteKernel noise_level_bounds in engine/models/surrogate.py
+
+
+def _make_folds(n: int, k: int, seed: int, groups=None):
+    """Row-index folds. groups=None: shuffled rows (the original behaviour, unchanged). Otherwise every row
+    with the same group label goes to the SAME fold, so no group is ever on both sides of a split. The caller
+    decides what a group is; this function never invents one."""
+    rng = np.random.default_rng(seed)
+    if groups is None:
+        idx = np.arange(n)
+        rng.shuffle(idx)
+        return np.array_split(idx, k)
+    ids = {}
+    gid = np.array([ids.setdefault(g, len(ids)) for g in groups])
+    sizes = np.bincount(gid)
+    # Balance rows per fold without ever splitting a group: place the largest groups first, each into the fold that
+    # currently holds the fewest rows. The seeded shuffle only decides the order among equal-sized groups, so the
+    # result is deterministic for a given seed. (Round-robin by group COUNT left folds very uneven when replicate
+    # counts differ.) A single group larger than an average fold cannot be balanced and simply fills its own fold.
+    order = sorted(rng.permutation(len(ids)).tolist(), key=lambda g: -int(sizes[g]))
+    loads = [0] * k
+    fold_of_group = np.empty(len(ids), dtype=int)
+    for g in order:
+        f = min(range(k), key=lambda i: loads[i])
+        fold_of_group[g] = f
+        loads[f] += int(sizes[g])
+    row_fold = fold_of_group[gid]
+    return [np.flatnonzero(row_fold == i) for i in range(k)]
+
+
+def _check_groups(groups, n: int):
+    """None when no groups were given; an error dict when they cannot support grouped validation."""
+    if groups is None:
+        return None
+    if len(groups) != n:
+        raise ValueError("groups must have one label per row")
+    n_groups = len(set(groups))
+    if n_groups < MIN_GROUPS_FOR_GROUPED_CV:
+        return {"error": f"Need at least {MIN_GROUPS_FOR_GROUPED_CV} distinct input sets to cross-validate with "
+                         f"repeated input sets kept together (found {n_groups})."}
+    return None
+
+
+def _new_fit_diagnostics() -> dict:
+    return {"n_fits": 0, "n_convergence_warnings": 0, "n_fits_with_hyperparameter_at_bound": 0,
+            "n_fits_noise_at_lower_bound": 0}
+
+
+def _fit_recorded(dim: int, Xn, y, diag: dict):
+    """Fit the surrogate, RECORD what the optimiser reported (and re-emit it, never swallow it)."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        gp = build_surrogate(dim).fit(Xn, y)
+    for w in caught:
+        warnings.warn(w.message, w.category, stacklevel=2)
+    diag["n_fits"] += 1
+    if any(issubclass(w.category, ConvergenceWarning) for w in caught):
+        diag["n_convergence_warnings"] += 1
+    fitted_kernel = getattr(gp, "kernel_", None)  # absent on stand-in models used in tests
+    if fitted_kernel is None:
+        return gp
+    theta, bounds = fitted_kernel.theta, fitted_kernel.bounds
+    if (np.isclose(theta, bounds[:, 0], atol=1e-3) | np.isclose(theta, bounds[:, 1], atol=1e-3)).any():
+        diag["n_fits_with_hyperparameter_at_bound"] += 1
+    noise = getattr(getattr(fitted_kernel, "k2", None), "noise_level", None)
+    if noise is not None and noise <= NOISE_LOWER_BOUND * 1.01:
+        diag["n_fits_noise_at_lower_bound"] += 1
+    return gp
 
 
 def _average_ranks(values: np.ndarray) -> np.ndarray:
@@ -55,7 +130,7 @@ def spearman_correlation(a, b):
     return float(np.clip(np.sum(da * db) / denominator, -1.0, 1.0))
 
 
-def compute_model_metrics(X: np.ndarray, y: np.ndarray, k: int = 5, seed: int = 0) -> dict:
+def compute_model_metrics(X: np.ndarray, y: np.ndarray, k: int = 5, seed: int = 0, groups=None) -> dict:
     """
     Returns:
       r2_score: coefficient of determination on held-out folds (can be
@@ -68,6 +143,9 @@ def compute_model_metrics(X: np.ndarray, y: np.ndarray, k: int = 5, seed: int = 
         acceptance threshold and is not tied to any customer requirement.
       Feature scaling bounds are fitted on each fold's TRAINING rows only.
       n_folds_used: actual folds used (may be < k if there isn't enough data).
+      groups: optional one label per row. When given, rows sharing a label are never split across folds
+        (cv_scheme "grouped", n_groups reported); otherwise folds are random rows (cv_scheme "random_rows"),
+        which is optimistic when replicate rows exist. fit_diagnostics records optimiser warnings.
     """
     X = np.asarray(X, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -75,11 +153,12 @@ def compute_model_metrics(X: np.ndarray, y: np.ndarray, k: int = 5, seed: int = 
     if n < 6:
         return {"error": "Need at least 6 historical rows to cross-validate model quality."}
 
-    k = max(2, min(k, n // 2, 10))
-    rng = np.random.default_rng(seed)
-    idx = np.arange(n)
-    rng.shuffle(idx)
-    folds = np.array_split(idx, k)
+    problem = _check_groups(groups, n)
+    if problem:
+        return problem
+    k = max(2, min(k, (len(set(groups)) if groups is not None else n) // 2, 10))
+    folds = _make_folds(n, k, seed, groups)
+    diag = _new_fit_diagnostics()
 
     y_range = max(y.max() - y.min(), 1e-9)
     tolerance = ACCURACY_TOLERANCE_FRACTION * y_range
@@ -96,7 +175,7 @@ def compute_model_metrics(X: np.ndarray, y: np.ndarray, k: int = 5, seed: int = 
         lo, hi = feature_bounds(X[train_idx])
         Xn_train = normalize(X[train_idx], lo, hi)
         Xn_test = normalize(X[test_idx], lo, hi)
-        gp = build_surrogate(d).fit(Xn_train, y[train_idx])
+        gp = _fit_recorded(d, Xn_train, y[train_idx], diag)
         preds[test_idx] = gp.predict(Xn_test)
 
     valid = ~np.isnan(preds)
@@ -118,9 +197,12 @@ def compute_model_metrics(X: np.ndarray, y: np.ndarray, k: int = 5, seed: int = 
         "accuracy_tolerance_note": ACCURACY_TOLERANCE_NOTE,
         "n_folds_used": k,
         "n_points_scored": int(len(y_valid)),
+        "cv_scheme": "grouped" if groups is not None else "random_rows",
+        "n_groups": len(set(groups)) if groups is not None else None,
+        "fit_diagnostics": diag,
     }
 
-def compute_uncertainty_calibration(X: np.ndarray, y: np.ndarray, k: int = 5, seed: int = 0) -> dict:
+def compute_uncertainty_calibration(X: np.ndarray, y: np.ndarray, k: int = 5, seed: int = 0, groups=None) -> dict:
     """
     Tests whether the GP's predicted uncertainty (sigma) actually carries
     information about real error, rather than assuming it does. Returns:
@@ -140,11 +222,12 @@ def compute_uncertainty_calibration(X: np.ndarray, y: np.ndarray, k: int = 5, se
     if n < 6:
         return {"error": "Need at least 6 historical rows to evaluate uncertainty calibration."}
 
-    k = max(2, min(k, n // 2, 10))
-    rng = np.random.default_rng(seed)
-    idx = np.arange(n)
-    rng.shuffle(idx)
-    folds = np.array_split(idx, k)
+    problem = _check_groups(groups, n)
+    if problem:
+        return problem
+    k = max(2, min(k, (len(set(groups)) if groups is not None else n) // 2, 10))
+    folds = _make_folds(n, k, seed, groups)
+    diag = _new_fit_diagnostics()
 
     preds = np.full(n, np.nan)
     sigmas = np.full(n, np.nan)
@@ -156,7 +239,7 @@ def compute_uncertainty_calibration(X: np.ndarray, y: np.ndarray, k: int = 5, se
         lo, hi = feature_bounds(X[train_idx])  # this fold's training rows only (see compute_model_metrics)
         Xn_train = normalize(X[train_idx], lo, hi)
         Xn_test = normalize(X[test_idx], lo, hi)
-        gp = build_surrogate(d).fit(Xn_train, y[train_idx])
+        gp = _fit_recorded(d, Xn_train, y[train_idx], diag)
         mu, sigma = gp.predict(Xn_test, return_std=True)
         preds[test_idx] = mu
         sigmas[test_idx] = sigma
@@ -179,4 +262,6 @@ def compute_uncertainty_calibration(X: np.ndarray, y: np.ndarray, k: int = 5, se
         "within_1sigma_pct": round(within_1sigma, 1),
         "within_2sigma_pct": round(within_2sigma, 1),
         "n_points_scored": int(valid.sum()),
+        "cv_scheme": "grouped" if groups is not None else "random_rows",
+        "fit_diagnostics": diag,
     }
