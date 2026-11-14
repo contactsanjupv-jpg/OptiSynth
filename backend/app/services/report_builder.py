@@ -9,11 +9,13 @@ import secrets
 from decimal import Decimal
 
 from docx import Document
-from docx.shared import Pt, RGBColor
+from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 from backend.app.services import change_case_rules
 from backend.app.services import ranking_evidence_rules as evidence_rules
+from backend.app.services import report_filename
+from backend.app.services import validation_plan
 
 REPORTS_ROOT = os.path.join(os.path.dirname(__file__), "..", "..", "..", "reports", "generated")
 
@@ -164,6 +166,26 @@ def format_predicted_value(v: float) -> str:
     return format(Decimal(f"{float(v):.4g}"), "f")
 
 
+def _trigger_label(trigger) -> str:
+    """'regulatory_restriction' -> 'Regulatory restriction' (the stored code is not customer-facing text)."""
+    text = str(trigger or "").replace("_", " ").strip()
+    return text[:1].upper() + text[1:]
+
+
+def _fit_table(table, widths_in, font_pt):
+    """Fixed column widths (inches) and a smaller font, so a wide table stays readable on a portrait page instead of
+    wrapping every column into a sliver."""
+    table.autofit = False
+    for col, w in zip(table.columns, widths_in):
+        col.width = Inches(w)
+    for row in table.rows:
+        for cell, w in zip(row.cells, widths_in):
+            cell.width = Inches(w)
+            for p in cell.paragraphs:
+                for run in p.runs:
+                    run.font.size = Pt(font_pt)
+
+
 def _kv_table(doc, rows):
     table = doc.add_table(rows=0, cols=2)
     table.style = "Light Grid Accent 1"
@@ -201,7 +223,7 @@ def _add_requirement_and_record(doc, ctx):
     if dataset:
         rows += [
             ("Historical dataset", f"Version {dataset['id']}: {dataset['original_filename']}"),
-            ("Dataset uploaded (UTC)", str(dataset["created_at"])),
+            ("Dataset uploaded (UTC)", dataset["created_at"]),
             ("Records ingested from that file", str(dataset["row_count"])),
         ]
     else:
@@ -210,6 +232,9 @@ def _add_requirement_and_record(doc, ctx):
     rows.append(("Model", "Gaussian process surrogate; version(s): " + (", ".join(versions) if versions else "no ranking run yet")))
     if ctx.get("ranked_at_utc"):
         rows.append(("Latest ranking run (UTC)", ctx["ranked_at_utc"]))
+        run_id = report_filename.run_identifier(ctx["ranked_at_utc"])
+        if run_id:
+            rows.append(("Ranking run identifier", f"{run_id} (the 'run_' part of this file's name)"))
     _kv_table(doc, rows)
 
     cands = ctx.get("candidates") or []
@@ -468,10 +493,21 @@ def _add_recorded_outcomes(doc, ctx):
     ).runs[0].font.size = Pt(9)
 
 
-def _add_human_decision_block(doc):
+def _decision_reference(ctx) -> str:
+    """Which analysis a decision refers to, from the report's own record: change case, ranking run, dataset."""
+    if not ctx:
+        return ""
+    run_id = report_filename.run_identifier(ctx.get("ranked_at_utc"))
+    dataset = ctx.get("dataset")
+    return (f"Change case {ctx.get('change_case_id')}; ranking run {run_id or 'none'}; "
+            + (f"historical dataset version {dataset['id']} ({dataset['original_filename']})" if dataset else "no historical dataset"))
+
+
+def _add_human_decision_block(doc, ctx=None):
     doc.add_heading("Human qualification decision", level=1)
     doc.add_paragraph(HUMAN_DECISION_STATEMENT)
-    _kv_table(doc, [
+    reference = _decision_reference(ctx)
+    _kv_table(doc, ([("Analysis this decision refers to", reference)] if reference else []) + [
         ("Decision (qualify / do not qualify / further testing)", ""),
         ("Candidate", ""),
         ("Basis and reference to physical test records", ""),
@@ -515,6 +551,218 @@ def _add_unranked_section(doc, unranked_results, spec, target_unit, unit_phrase)
     doc.add_paragraph(UNRANKED_UNCERTAINTY_NOTE).runs[0].font.size = Pt(9)
 
 
+def _basis_for_position(r, metric, unit_phrase):
+    p = change_case_rules.format_model_probability(r["predicted_probability"])
+    value = ("predicted value not recorded" if r.get("predicted_value") is None
+             else f"predicted {metric}{unit_phrase} {format_predicted_value(r['predicted_value'])}")
+    spread = f"std {r['uncertainty_std']:.3f}"
+    if r.get("ranking_status") == evidence_rules.STATUS_NOT_RANKED:
+        return (f"No rank: its inputs are outside the historical evidence, so the model's figures "
+                f"(probability {p}, {value}, {spread}) are an extrapolation. Physical testing is the only way to "
+                f"establish {metric}.")
+    if r.get("rank") is None:  # supported, but no rank was recorded for it: say so, never print "Rank None"
+        return f"No rank recorded: model-estimated probability {p}, {value}, {spread}."
+    text = f"Rank {r['rank']}: model-estimated probability {p}, {value}, {spread}."
+    if r.get("ranking_status") == evidence_rules.STATUS_RANKED_WITH_CAUTION:
+        text += " Ranked provisionally: an input lies just beyond the observed range."
+    return text
+
+
+PLAN_TABLE_WIDTHS_IN = (0.55, 0.8, 1.45, 1.2, 1.75, 0.75)  # six columns that fit a 6.5-inch text width
+PLAN_TABLE_FONT_PT = 8
+
+
+def _rank_cell(r):
+    """The model's own rank, never a row counter: 'No rank' when there is none, '(provisional)' when ranked on
+    the caution tier (an input just beyond the observed range)."""
+    if r.get("rank") is None:
+        return "No rank"
+    if r.get("ranking_status") == evidence_rules.STATUS_RANKED_WITH_CAUTION:
+        return f"{r['rank']} (provisional)"
+    return str(r["rank"])
+
+
+def _add_validation_plan(doc, supported_results, unranked_results, spec, target_unit, unit_phrase, audit_context):
+    """What a physical test must establish, in what order, and on what evidence -- from stored facts only."""
+    metric = spec["target_metric"] if spec else "the target property"
+    if spec:
+        phrase = DIRECTION_PHRASE.get(spec.get("direction"), spec.get("direction", ""))
+        doc.add_paragraph(
+            f"What a physical test must establish: {metric}{unit_phrase} {phrase} {spec['target_value']}. This is the "
+            "only acceptance criterion the system holds. " + validation_plan.NOT_SPECIFIED_BY_ANALYSIS
+        )
+        doc.add_paragraph(validation_plan.reference_condition_text((audit_context or {}).get("ingestion_review")))
+    doc.add_paragraph(
+        "Order of testing: candidates the historical data supports come first, in rank order, followed by candidates "
+        "outside the evidence, which have no rank. The order follows the model estimate; it is not an "
+        "experimental design chosen to reduce uncertainty."
+    )
+    headers = ["Model rank", "Candidate", "Basis for this position", "Evidence gaps for this candidate",
+               f"Closest historical records (measured {metric})", "Outcome recorded (customer-entered)"]
+    table = doc.add_table(rows=1, cols=len(headers))
+    table.style = "Light Grid Accent 1"
+    for cell, text in zip(table.rows[0].cells, headers):
+        cell.text = text
+    # Supported candidates by their actual rank (a stable sort, so the caller's order never decides it), then any
+    # supported candidate with no rank, then the unranked ones in the order given. No row number is shown.
+    ordered = sorted(supported_results, key=lambda r: (r.get("rank") is None, r.get("rank") or 0)) + list(unranked_results)
+    for r in ordered:
+        gaps = validation_plan.candidate_gaps(r.get("domain_coverage"), DOMAIN_COVERAGE_LABELS)
+        closest = r.get("closest_records") or []
+        values = [
+            _rank_cell(r),
+            r["candidate_name"],
+            _basis_for_position(r, metric, unit_phrase),
+            "; ".join(gaps) if gaps else "None found by the per-feature range check (joint coverage is not checked).",
+            "\n".join(f"{c['reference']}: {c['target']} (distance {c['distance']})" for c in closest) or "Not available.",
+            "Yes (see recorded outcomes)" if r.get("outcome_recorded") else "No",
+        ]
+        for cell, text in zip(table.add_row().cells, values):
+            cell.text = text
+    _fit_table(table, PLAN_TABLE_WIDTHS_IN, PLAN_TABLE_FONT_PT)
+    doc.add_paragraph(validation_plan.CLOSEST_RECORDS_NOTE).runs[0].font.size = Pt(9)
+
+
+def _add_result_reading(doc, spec, unit_phrase):
+    metric = spec["target_metric"]
+    phrase = DIRECTION_PHRASE.get(spec.get("direction"), spec.get("direction", ""))
+    doc.add_heading("How to read a physical result", level=2)
+    doc.add_paragraph(
+        f"A measured {metric}{unit_phrase} {phrase} {spec['target_value']}, obtained by the customer's own test method "
+        "under conditions comparable with the historical data, supports taking that candidate further. It does not "
+        "qualify it: other requirements are not evaluated here, and the decision rests with the customer's authorised "
+        "qualification personnel."
+    )
+    doc.add_paragraph(
+        "A measured value on the other side of the threshold contradicts the model's estimate for this requirement and "
+        "is evidence against the candidate for it. A measured value that differs from the predicted value by much more "
+        "than the predicted standard deviation shows the model was unreliable for that candidate, so its estimates for "
+        "similar candidates deserve less weight."
+    )
+    doc.add_paragraph(
+        "Record each result, with the method and conditions used, under 'Recorded physical validation outcomes'. The "
+        "application does not verify recorded results."
+    )
+
+
+def _add_summary(doc, ranked_results, supported_results, unranked_results, ctx, model_quality, data_quality,
+                 n_historical_rows):
+    """The first page for an engineering decision-maker: what was analysed, what the evidence supports, what is
+    not established, and where the detail is. Every statement is taken from the same data as the tables below it,
+    so it cannot drift from them. Nothing here adds a claim the detailed sections do not already make."""
+    doc.add_heading("Summary for the decision-maker", level=1)
+    spec = (ctx or {}).get("spec")
+    if ctx and ctx.get("stale_notice"):
+        p = doc.add_paragraph()
+        p.add_run("NOTICE -- NEWER EVIDENCE EXISTS. ").bold = True
+        p.add_run(ctx["stale_notice"] + " Regenerate this report after re-running the ranking.")
+    target_unit = ((spec.get("units") or {}).get(spec["target_metric"])) if spec else None
+    unit_phrase = f" ({target_unit})" if target_unit else ""
+    metric = spec["target_metric"] if spec else "the target property"
+
+    if data_quality and data_quality.get("status") == "insufficient":
+        doc.add_paragraph(INSUFFICIENT_EVIDENCE_STATEMENT)
+    if not ranked_results:
+        doc.add_paragraph("No candidate has been ranked yet, so this report holds no ranking or validation plan.")
+    else:
+        n = len(ranked_results)
+        scope = f"This report compares {n} candidate substitute{'s' if n != 1 else ''} against one requirement"
+        if spec:
+            phrase = DIRECTION_PHRASE.get(spec.get("direction"), spec.get("direction", ""))
+            scope += f" ({metric}{unit_phrase} {phrase} {spec['target_value']})"
+        doc.add_paragraph(
+            scope + f", using {n_historical_rows} historical record{'s' if n_historical_rows != 1 else ''} supplied by "
+            "the customer. It is an analysis, not a qualification: it does not qualify any candidate."
+        )
+        doc.add_paragraph("What the analysis found", style="Heading 2")
+        line = f"{len(supported_results)} of {n} candidates lie inside the range the historical data covers and are ranked"
+        if unranked_results:
+            line += f"; {len(unranked_results)} lie outside it and have no rank"
+        doc.add_paragraph(line + ".", style="List Bullet")
+        ordered = sorted((r for r in supported_results if r.get("rank") is not None), key=lambda r: r["rank"])
+        if ordered:
+            top = []
+            for r in ordered[:3]:
+                value = "" if r.get("predicted_value") is None else \
+                    f", predicted {metric}{unit_phrase} {format_predicted_value(r['predicted_value'])}"
+                top.append(f"{r['rank']}. {r['candidate_name']} (model-estimated probability "
+                           f"{change_case_rules.format_model_probability(r['predicted_probability'])}{value})")
+            doc.add_paragraph(
+                "Highest model-estimated probability: " + "; ".join(top) + ". The suggested order of physical testing "
+                "follows these ranks (see Recommended Validation Experiments); it is not an experimental design chosen "
+                "to reduce uncertainty.", style="List Bullet")
+        if unranked_results:
+            doc.add_paragraph(
+                "Not ranked, so physical testing is the only way to establish "
+                f"{metric}: " + ", ".join(r["candidate_name"] for r in unranked_results) + ".", style="List Bullet")
+        if ctx:
+            waiting = [c["candidate_name"] for c in ctx.get("candidates", []) if not c.get("has_prediction")]
+            if waiting:
+                doc.add_paragraph("Not yet ranked: " + ", ".join(waiting) + ".", style="List Bullet")
+            with_outcome = {o["candidate_name"] for o in ctx.get("outcomes") or []}
+            doc.add_paragraph(
+                f"Outcomes recorded by the customer: {len(with_outcome)} of {len(ctx.get('candidates') or [])} "
+                "candidates (the application does not verify them).", style="List Bullet")
+
+    doc.add_paragraph("What this analysis does not establish", style="Heading 2")
+    for text in (
+        "The model-estimated probability is the model's own estimate, not a measured or validated success rate.",
+        (f"Only {metric} is analysed, and only the modelled inputs; other qualification requirements are not evaluated."
+         if spec else "Only one requirement and the modelled inputs are analysed; other requirements are not evaluated."),
+        "Range coverage is checked one input at a time, not jointly.",
+        "The decision to qualify rests with the customer's authorised qualification personnel, after physical validation.",
+    ):
+        doc.add_paragraph(text, style="List Bullet")
+
+    cautions = []
+    if model_quality and "error" in model_quality:
+        cautions.append("Model performance could not be assessed on this dataset: " + str(model_quality["error"]))
+    elif model_quality:
+        how = ("the validation folds keep repeated input sets together, so this is not a test on new batches, other "
+               "suppliers or other materials" if model_quality.get("cv_scheme") == "grouped" else
+               "the validation folds are random by row, which can look better than performance on new formulations")
+        cautions.append(
+            f"On the dataset's own history the cross-validated R-squared is {model_quality['r2_score']} and the mean "
+            f"absolute error {model_quality['mean_absolute_error']}{' ' + target_unit if target_unit else ''}; {how}.")
+        fit = model_quality.get("fit_diagnostics") or {}
+        if any(fit.get(k) for k in ("n_convergence_warnings", "n_fits_with_hyperparameter_at_bound",
+                                    "n_fits_noise_at_lower_bound")):
+            cautions.append("The model optimiser reported problems in some validation fits; treat the uncertainty "
+                            "figures with extra caution (see Model performance evidence).")
+    review = (ctx or {}).get("ingestion_review")
+    if ctx and spec and not review:
+        cautions.append("No intake review record exists for this dataset: units, mapping and test conditions were not recorded.")
+    elif review and spec:
+        undeclared = [c for c in list(spec["feature_columns"]) + [spec["target_metric"]]
+                      if not (review.get("units", {}).get(c) or {}).get("canonical")]
+        if undeclared:
+            cautions.append("No unit is recorded for: " + ", ".join(undeclared) + ".")
+        if not review.get("condition_columns"):
+            cautions.append("No test conditions were declared for the historical data, so comparability of a new "
+                            "physical test with it is not established.")
+        warns = [f for f in review.get("flags", []) if f.get("severity") == "warning"]
+        if warns:
+            cautions.append(f"{len(warns)} intake review warning{'s' if len(warns) != 1 else ''} recorded (see Evidence intake review).")
+    if cautions:
+        doc.add_paragraph("Evidence cautions for this dataset", style="Heading 2")
+        for text in cautions:
+            doc.add_paragraph(text, style="List Bullet")
+
+    doc.add_paragraph(
+        "Detail follows in this order: Ranked Candidates, Recommended Validation Experiments, recorded outcomes and the "
+        "human qualification decision. The technical evidence behind every figure is in the Appendices."
+    ).runs[0].font.size = Pt(9)
+    if ctx:
+        rows = [("Change case ID", str(ctx["change_case_id"]))]
+        run_id = report_filename.run_identifier(ctx.get("ranked_at_utc"))
+        if run_id:
+            rows.append(("Ranking run identifier", run_id))
+        dataset = ctx.get("dataset")
+        rows.append(("Historical dataset", f"Version {dataset['id']}: {dataset['original_filename']}" if dataset else "None uploaded"))
+        rows.append(("Report generated (UTC)", ctx["generated_at_utc"]))
+        _kv_table(doc, rows)
+
+
 def build_qualification_report(change_case: dict, ranked_results: list, n_historical_rows: int,
                                 organization_name: str, data_quality: dict = None,
                                 model_quality: dict = None, uncertainty_calibration: dict = None,
@@ -540,20 +788,19 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
 
     meta = doc.add_paragraph()
     meta.add_run(f"Prepared for: {organization_name}\n").font.size = Pt(10)
-    meta.add_run(f"Trigger: {change_case['trigger_type']}").font.size = Pt(10)
+    meta.add_run(f"Trigger: {_trigger_label(change_case['trigger_type'])}").font.size = Pt(10)
     if change_case.get("restricted_substance"):
         meta.add_run(f" ({change_case['restricted_substance']})").font.size = Pt(10)
 
-    if audit_context:
-        _add_requirement_and_record(doc, audit_context)
-        _add_ingestion_review(doc, audit_context)
+    unranked_results = [r for r in ranked_results if r.get("ranking_status") == evidence_rules.STATUS_NOT_RANKED]
+    supported_results = [r for r in ranked_results if r.get("ranking_status") != evidence_rules.STATUS_NOT_RANKED]
+    _add_summary(doc, ranked_results, supported_results, unranked_results, audit_context, model_quality, data_quality,
+                 n_historical_rows)
 
     doc.add_heading("Ranked Candidates", level=1)
     # Only candidates the historical data supports are ranked. The rest (inputs outside the observed range)
     # are disclosed in their own section: the model's numbers unchanged, labelled as extrapolation, no
     # position (see ranking_evidence_rules). Results without a ranking_status are treated as ranked.
-    unranked_results = [r for r in ranked_results if r.get("ranking_status") == evidence_rules.STATUS_NOT_RANKED]
-    supported_results = [r for r in ranked_results if r.get("ranking_status") != evidence_rules.STATUS_NOT_RANKED]
     if not ranked_results:
         doc.add_paragraph("No candidates ranked yet.")
     else:
@@ -644,10 +891,29 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
             _add_unranked_section(doc, unranked_results, spec, target_unit, unit_phrase)
 
         doc.add_heading("Recommended Validation Experiments", level=1)
+        _add_validation_plan(doc, supported_results, unranked_results, spec, target_unit, unit_phrase, audit_context)
         for r in ranked_results:
             p = doc.add_paragraph(style="List Bullet")
             p.add_run(f"{r['candidate_name']}: ").bold = True
             p.add_run(r["recommended_experiment"])
+        if spec:
+            _add_result_reading(doc, spec, unit_phrase)
+
+    if audit_context:
+        _add_recorded_outcomes(doc, audit_context)
+        _add_human_decision_block(doc, audit_context)
+
+    # Everything above is for the decision. Everything below is the technical evidence behind it.
+    doc.add_page_break()
+    doc.add_heading("Appendices", level=1)
+    doc.add_paragraph(
+        "Technical evidence behind the sections above: the requirement and analysis record, how the customer's file "
+        "was read, range coverage, model performance, evidence gaps and the data basis."
+    ).runs[0].font.size = Pt(9)
+
+    if audit_context:
+        _add_requirement_and_record(doc, audit_context)
+        _add_ingestion_review(doc, audit_context)
 
     coverage_items = [r for r in ranked_results if r.get("domain_coverage")]
     if coverage_items:
@@ -691,7 +957,8 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
                       else CROSS_VALIDATION_CAVEAT)
             doc.add_paragraph(caveat).runs[0].font.size = Pt(9)
             fit = model_quality.get("fit_diagnostics") or {}
-            if fit.get("n_convergence_warnings") or fit.get("n_fits_with_hyperparameter_at_bound"):
+            if any(fit.get(k) for k in ("n_convergence_warnings", "n_fits_with_hyperparameter_at_bound",
+                                        "n_fits_noise_at_lower_bound")):
                 doc.add_paragraph(
                     f"Model-fitting note: across {fit['n_fits']} cross-validation fits, the optimiser reported a "
                     f"convergence warning in {fit['n_convergence_warnings']}, a model setting reached its allowed "
@@ -726,8 +993,6 @@ def build_qualification_report(change_case: dict, ranked_results: list, n_histor
 
     if audit_context:
         _add_evidence_gaps(doc, ranked_results, audit_context)
-        _add_recorded_outcomes(doc, audit_context)
-        _add_human_decision_block(doc)
 
     doc.add_heading("Basis for this analysis", level=1)
     if data_quality and data_quality["status"] == "insufficient":

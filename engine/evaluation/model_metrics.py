@@ -24,7 +24,6 @@ ACCURACY_TOLERANCE_NOTE = (
 
 
 MIN_GROUPS_FOR_GROUPED_CV = 6
-NOISE_LOWER_BOUND = 1e-4  # must match WhiteKernel noise_level_bounds in engine/models/surrogate.py
 
 
 def _make_folds(n: int, k: int, seed: int, groups=None):
@@ -72,25 +71,42 @@ def _new_fit_diagnostics() -> dict:
             "n_fits_noise_at_lower_bound": 0}
 
 
-def _fit_recorded(dim: int, Xn, y, diag: dict):
-    """Fit the surrogate, RECORD what the optimiser reported (and re-emit it, never swallow it)."""
+def _fold_seed(seed: int, fold: int) -> int:
+    """The GP's random_state for one fold: derived from the evaluation seed AND the fold index, so every fold
+    restarts its hyperparameter search from its own reproducible draws, and a different `seed` changes them."""
+    return int(np.random.SeedSequence([int(seed), int(fold)]).generate_state(1)[0])
+
+
+def _fit_recorded(dim: int, Xn, y, diag: dict, random_state: int = 0):
+    """Fit the surrogate with the given random_state, RECORD what the optimiser reported, then re-emit every
+    warning (nothing is swallowed). Counters are updated before re-emitting, so they stay correct even if the
+    caller's warning filters turn a warning into an error."""
+    gp = build_surrogate(dim)
+    if hasattr(gp, "set_params"):  # stand-in models used in tests have none
+        gp.set_params(random_state=random_state)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        gp = build_surrogate(dim).fit(Xn, y)
-    for w in caught:
-        warnings.warn(w.message, w.category, stacklevel=2)
+        gp = gp.fit(Xn, y)
     diag["n_fits"] += 1
     if any(issubclass(w.category, ConvergenceWarning) for w in caught):
         diag["n_convergence_warnings"] += 1
     fitted_kernel = getattr(gp, "kernel_", None)  # absent on stand-in models used in tests
-    if fitted_kernel is None:
-        return gp
-    theta, bounds = fitted_kernel.theta, fitted_kernel.bounds
-    if (np.isclose(theta, bounds[:, 0], atol=1e-3) | np.isclose(theta, bounds[:, 1], atol=1e-3)).any():
-        diag["n_fits_with_hyperparameter_at_bound"] += 1
-    noise = getattr(getattr(fitted_kernel, "k2", None), "noise_level", None)
-    if noise is not None and noise <= NOISE_LOWER_BOUND * 1.01:
-        diag["n_fits_noise_at_lower_bound"] += 1
+    if fitted_kernel is not None:
+        theta, bounds = fitted_kernel.theta, fitted_kernel.bounds  # log-space, the bounds the optimiser used
+        at_lower = np.isclose(theta, bounds[:, 0], atol=1e-3)
+        at_upper = np.isclose(theta, bounds[:, 1], atol=1e-3)
+        if (at_lower | at_upper).any():
+            diag["n_fits_with_hyperparameter_at_bound"] += 1
+        offset = 0  # theta holds one entry per element: an anisotropic length_scale takes several, a fixed term none
+        for h in fitted_kernel.hyperparameters:
+            if h.fixed:
+                continue
+            own = slice(offset, offset + h.n_elements)
+            offset += h.n_elements
+            if h.name.endswith("noise_level") and at_lower[own].any():
+                diag["n_fits_noise_at_lower_bound"] += 1  # always a subset of the line above: same test, same tolerance
+    for w in caught:
+        warnings.warn(w.message, w.category, stacklevel=2)
     return gp
 
 
@@ -175,7 +191,7 @@ def compute_model_metrics(X: np.ndarray, y: np.ndarray, k: int = 5, seed: int = 
         lo, hi = feature_bounds(X[train_idx])
         Xn_train = normalize(X[train_idx], lo, hi)
         Xn_test = normalize(X[test_idx], lo, hi)
-        gp = _fit_recorded(d, Xn_train, y[train_idx], diag)
+        gp = _fit_recorded(d, Xn_train, y[train_idx], diag, _fold_seed(seed, i))
         preds[test_idx] = gp.predict(Xn_test)
 
     valid = ~np.isnan(preds)
@@ -239,7 +255,7 @@ def compute_uncertainty_calibration(X: np.ndarray, y: np.ndarray, k: int = 5, se
         lo, hi = feature_bounds(X[train_idx])  # this fold's training rows only (see compute_model_metrics)
         Xn_train = normalize(X[train_idx], lo, hi)
         Xn_test = normalize(X[test_idx], lo, hi)
-        gp = _fit_recorded(d, Xn_train, y[train_idx], diag)
+        gp = _fit_recorded(d, Xn_train, y[train_idx], diag, _fold_seed(seed, i))
         mu, sigma = gp.predict(Xn_test, return_std=True)
         preds[test_idx] = mu
         sigmas[test_idx] = sigma

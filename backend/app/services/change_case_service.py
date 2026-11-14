@@ -59,6 +59,7 @@ from backend.app.services import change_case_rules, evidence_rules
 
 from backend.app.services import candidate_lifecycle_rules as cand_rules
 from backend.app.services import ranking_evidence_rules
+from backend.app.services import validation_plan
 
 from backend.app.schemas.errors import ValidationError
 
@@ -578,7 +579,9 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
         domain_coverage, decision_support = prepared[candidate_id]
         verdict = evidence["by_id"][candidate_id]
         experiment_description = _minimum_experiment_description(
-            r, target_value, direction, domain_coverage, ranking_status=verdict["status"])
+            r, target_value, direction, domain_coverage, ranking_status=verdict["status"],
+            position=(verdict["rank"], evidence["summary"]["ranked"] + evidence["summary"]["ranked_with_caution"])
+            if verdict["rank"] else None)
         to_persist.append({
             "candidate_id": candidate_id,
             "inputs_version": versions_read[candidate_id],
@@ -623,7 +626,8 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
 
 
 def _minimum_experiment_description(ranked_candidate: dict, target_value: float, direction: str,
-                                     domain_coverage: dict = None, ranking_status: str = None) -> str:
+                                     domain_coverage: dict = None, ranking_status: str = None,
+                                     position: tuple = None) -> str:
     """A simple, honest, rule-based minimum-validation-experiment
     description -- deliberately NOT sophisticated active-learning
     experiment design in this phase (that's flagged as a known,
@@ -653,9 +657,10 @@ def _minimum_experiment_description(ranked_candidate: dict, target_value: float,
             f"Run a physical qualification test against the target spec for "
             f"'{ranked_candidate['name']}' ({confidence_note}; model-estimated probability "
             f"{change_case_rules.format_model_probability(prob)}, a model output rather than a measured or validated "
-            f"result). This analysis identifies which "
-            f"candidate to test first -- it does not replace running and "
-            f"recording the actual physical result."
+            f"result)."
+            + (f" Suggested test position {position[0]} of {position[1]} among the candidates the evidence supports."
+               if position else "")
+            + " This analysis does not replace running and recording the actual physical result."
         )
     if domain_coverage and domain_coverage["status"] != change_case_rules.DOMAIN_WITHIN:
         flagged = ", ".join(
@@ -739,11 +744,19 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
         dataset = qualification_dataset_repo.get_latest_dataset_for_change_case(organization_id, change_case_id)
 
     n_historical_rows = dataset["row_count"] if dataset else 0
+    history_records = []  # the evidence rows, for "closest historical records" in the validation plan
     data_quality = None
     model_quality = None
     uncertainty_calibration = None
     if dataset:
         experiments = qualification_dataset_repo.list_experiments_for_dataset(organization_id, dataset["id"])
+        # The SAME deduplication the model fit uses (rank_change_case), on the same rows in the same order, so a
+        # record is never cited that the model did not train on separately, and a repeated measurement is cited once.
+        history_records = change_case_rules.deduplicate_rows([
+            {"id": e["id"], "features": json.loads(e["features_json"]), "target_value": e["target_value"],
+             "provenance": json.loads(e["provenance_json"]) if e.get("provenance_json") else None}
+            for e in experiments
+        ])
         spec = json.loads(case["qualification_spec_json"])
         data_quality = _assess_dataset_quality(spec, dataset, experiments)
         change_case_rules.check_can_generate_report(data_quality["status"])
@@ -783,6 +796,8 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
             {"name": c["candidate_name"], "predicted_probability": pred["predicted_probability"]},
             rec_spec["target_value"], rec_spec["direction"], c.get("domain_coverage"),
             ranking_status=verdict["status"],
+            position=(verdict["rank"], evidence["summary"]["ranked"] + evidence["summary"]["ranked_with_caution"])
+            if verdict["rank"] else None,
         )
         if c.get("outcome_count"):
             # Don't ask for a test the report itself shows as already done without saying so: the recorded
@@ -804,6 +819,9 @@ def generate_report(organization_id: int, change_case_id: int, organization_name
             "recommended_experiment": description,
             "domain_coverage": c.get("domain_coverage"),
             "decision_support": c.get("decision_support"),  # C1
+            "closest_records": validation_plan.closest_records(
+                c.get("properties") or {}, history_records, rec_spec["feature_columns"]),
+            "outcome_recorded": bool(c.get("outcome_count")),
         })
 
     audit_context = _build_report_audit_context(
