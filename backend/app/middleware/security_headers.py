@@ -5,8 +5,7 @@ the load balancer/reverse proxy in production) -- these are the
 application-level headers that are always correct to send regardless of
 where TLS terminates.
 
-NOT RUNTIME-TESTED IN THE SANDBOX: starlette ships with fastapi, which is
-not installed here. Syntax-validated via py_compile only.
+Covered by backend/tests/test_level5_hardening.py.
 """
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -19,4 +18,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        if request.url.path.startswith("/api/"):
+            # Responses carry a customer's proprietary evidence, rankings and reports: keep them out of shared
+            # caches and the browser's disk cache. (A route that sets its own Cache-Control is left alone.)
+            response.headers.setdefault("Cache-Control", "no-store")
         return response

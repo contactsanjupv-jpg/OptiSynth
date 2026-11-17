@@ -19,6 +19,7 @@ What this module will NOT do silently:
 """
 import csv
 import io
+import zipfile
 import re
 
 from backend.app.config.settings import settings
@@ -32,7 +33,18 @@ MAX_TABLES = 40
 MAX_XLSX_SHEETS = 20
 MAX_PDF_PAGES = 100
 MAX_COLUMNS = 60
+MAX_SCANNED_ROW_FACTOR = 5          # rows looked at, blank or not, as a multiple of MAX_UPLOAD_ROWS
+MAX_XLSX_CELLS_PER_ROW = 16384      # Excel's own column limit
 PREVIEW_ROWS = 40
+
+# The limits above are read at run time. The parser child process has its own copy of this module, so the parent
+# sends it the current values (see sandboxed_parse.parse) and a limit changed here applies there too.
+LIMIT_NAMES = ("MAX_TABLES", "MAX_XLSX_SHEETS", "MAX_PDF_PAGES", "MAX_COLUMNS", "MAX_SCANNED_ROW_FACTOR",
+               "MAX_XLSX_CELLS_PER_ROW", "PREVIEW_ROWS")
+
+
+def current_limits() -> dict:
+    return {name: globals()[name] for name in LIMIT_NAMES}
 
 _QUOTED_TEXT_IN_FORMAT = re.compile(r'"[^"]+"')
 
@@ -151,6 +163,16 @@ def _xlsx_tables(file_bytes: bytes):
                 if len(rows) > settings.MAX_UPLOAD_ROWS + 1:
                     truncated = True
                     break
+                # Blank rows are skipped below without being counted, so bound the rows LOOKED AT too: a file of a
+                # few hundred kilobytes can declare tens of millions of them.
+                if r_idx > MAX_SCANNED_ROW_FACTOR * settings.MAX_UPLOAD_ROWS:
+                    raise ValidationError(
+                        f"Sheet '{ws.title}' has more than {MAX_SCANNED_ROW_FACTOR * settings.MAX_UPLOAD_ROWS} rows once "
+                        "blank rows are counted. Delete the unused rows (or copy the table to a new sheet) and re-upload.")
+                if len(row) > MAX_XLSX_CELLS_PER_ROW:
+                    raise ValidationError(
+                        f"Sheet '{ws.title}' has a row wider than {MAX_XLSX_CELLS_PER_ROW} columns, which no real "
+                        "table needs. Delete the unused columns and re-upload.")
                 cells = []
                 for c_idx, cell in enumerate(row):
                     v = getattr(cell, "value", None)
@@ -356,18 +378,53 @@ def _pdf_tables(file_bytes: bytes):
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+ARCHIVE_TOO_LARGE = (
+    "This file expands to far more data than its size suggests ({what}), so it cannot be read safely. Export just the "
+    "table you need to a CSV file, or upload a smaller workbook or document."
+)
+
+
+def check_archive(kind: str, file_bytes: bytes) -> None:
+    """Refuses a .xlsx/.docx whose zip directory declares an implausible amount of data, before anything is
+    decompressed. A file that is not a zip at all is left for the parser to reject with its usual message."""
+    if kind not in ("xlsx", "docx"):
+        return
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+            infos = zf.infolist()
+    except zipfile.BadZipFile:
+        return
+    if len(infos) > settings.MAX_ARCHIVE_ENTRIES:
+        raise ValidationError(ARCHIVE_TOO_LARGE.format(what=f"{len(infos)} parts"))
+    declared = sum(i.file_size for i in infos)
+    if declared > settings.MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+        raise ValidationError(ARCHIVE_TOO_LARGE.format(what=f"about {declared // (1024 * 1024)} MB once unpacked"))
+
+
+def parse_binary(kind: str, file_bytes: bytes):
+    """-> (tables, warnings) for an .xlsx / .docx / .pdf, parsed in THIS process. Callers use list_tables, which runs
+    this in a resource-limited child process (see sandboxed_parse.py)."""
+    check_archive(kind, file_bytes)
+    if kind == "xlsx":
+        return _xlsx_tables(file_bytes)
+    if kind == "docx":
+        return _docx_tables(file_bytes)
+    return _pdf_tables(file_bytes)
+
+
 def list_tables(filename: str, file_bytes: bytes) -> dict:
     """-> {"kind", "tables": [table...], "warnings": [str...]}. Raises
     ValidationError (user-safe message) for unsupported/unreadable files."""
     kind = file_kind(filename)
     if kind == "csv":
         tables, warnings = _csv_tables(file_bytes)
-    elif kind == "xlsx":
-        tables, warnings = _xlsx_tables(file_bytes)
-    elif kind == "docx":
-        tables, warnings = _docx_tables(file_bytes)
     else:
-        tables, warnings = _pdf_tables(file_bytes)
+        check_archive(kind, file_bytes)  # cheap and decisive: refuse an obvious bomb without starting a process
+        if settings.PARSE_ISOLATION:
+            from backend.app.services import sandboxed_parse
+            tables, warnings = sandboxed_parse.parse(kind, file_bytes, limits=current_limits())
+        else:
+            tables, warnings = parse_binary(kind, file_bytes)
     return {"kind": kind, "tables": tables, "warnings": warnings}
 
 

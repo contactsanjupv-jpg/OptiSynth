@@ -166,3 +166,16 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- Server-side sessions (Alembic revision f6c9d4e2a1b3). Mirrored here only because init_db() is still used by test_api.py.
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL UNIQUE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_expires ON user_sessions(expires_at);

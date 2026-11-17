@@ -5,9 +5,12 @@ NEVER taken from the request), thin (real logic lives in
 change_case_service.py / change_case_rules.py), audit-logged on writes.
 """
 import json
+import logging
+import os
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Query
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 
 from backend.app.middleware.upload_limits import read_upload_limited
 from backend.app.schemas.errors import ValidationError
@@ -318,6 +321,15 @@ async def record_outcome(change_case_id: int, candidate_id: int, body: RecordOut
     return result
 
 
+def _remove_generated_file(path: str) -> None:
+    """A change-case report is built per request and not recorded anywhere, so once it has been sent the copy on
+    disk is only a leak of the customer's data waiting to happen."""
+    try:
+        os.remove(path)
+    except OSError:
+        logging.getLogger("rdopt").warning("could not remove generated report %s", os.path.basename(path))
+
+
 @router.post("/{change_case_id}/report")
 async def generate_report(change_case_id: int, actor: AuthContext = Depends(get_current_actor)):
     case = change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)  # 404 if not owned
@@ -336,4 +348,5 @@ async def generate_report(change_case_id: int, actor: AuthContext = Depends(get_
         file_path,
         headers={"Content-Disposition": report_filename.content_disposition(case["name"], change_case_id, run_id)},
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        background=BackgroundTask(_remove_generated_file, file_path),
     )

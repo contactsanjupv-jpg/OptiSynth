@@ -13,7 +13,7 @@ os.environ.setdefault("PASSWORD_PEPPER", "test-password-pepper-not-for-productio
 
 from backend.app.config.settings import Settings, ConfigError  # noqa: E402
 
-BASE = {"SECRET_KEY": "k" * 20, "PASSWORD_PEPPER": "p" * 20}
+BASE = {"SECRET_KEY": "k" * 32, "PASSWORD_PEPPER": "p" * 32}  # 32+ characters: the minimum with ENV=production (Level 5)
 
 
 def build(**env):

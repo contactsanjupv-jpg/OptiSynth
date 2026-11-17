@@ -19,7 +19,7 @@ from fastapi import Cookie, HTTPException, status
 
 from backend.app.config.settings import settings
 from backend.app.security.sessions import read_session_token
-from backend.app.repositories import users_repo, memberships_repo
+from backend.app.repositories import users_repo, memberships_repo, sessions_repo
 
 
 @dataclass
@@ -27,6 +27,7 @@ class AuthContext:
     user: dict
     organization_id: int
     role: str
+    session_id: str | None = None  # the stored session this request came in on (logout revokes exactly this one)
 
 
 def get_current_actor(
@@ -47,6 +48,12 @@ def get_current_actor(
     user_id = payload.get("user_id")
     organization_id = payload.get("organization_id")
 
+    # A correctly signed cookie is not enough: the session must still exist server-side, unrevoked and unexpired.
+    # (This is what makes logout real: a copy of the cookie is refused once its session is revoked.)
+    session_id = payload.get("sid")
+    if not isinstance(session_id, str) or not sessions_repo.is_session_active(session_id, user_id, organization_id):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or invalid.")
+
     # Does NOT trust the session payload blindly -- re-fetches the user and
     # re-checks membership + active status on every request, so a
     # deactivated user or a removed membership takes effect immediately,
@@ -59,4 +66,4 @@ def get_current_actor(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No access to this organization.")
 
     user = users_repo.get_user_public(user_id)
-    return AuthContext(user=user, organization_id=organization_id, role=membership["role"])
+    return AuthContext(user=user, organization_id=organization_id, role=membership["role"], session_id=session_id)

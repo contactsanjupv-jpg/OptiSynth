@@ -1,3 +1,13 @@
+class TooManyAttempts(Exception):
+    """Raised when a caller has made too many recent attempts (see security/login_throttle.py). The response is a
+    429 with a Retry-After header; the message is safe to show a customer."""
+
+    def __init__(self, retry_after_seconds: int, message: str = "Too many attempts. Please wait and try again."):
+        super().__init__(message)
+        self.message = message
+        self.retry_after_seconds = max(1, int(retry_after_seconds))
+
+
 class ValidationError(Exception):
     """Raised for business-rule validation that Pydantic's type/shape
     checking can't express (e.g. "email already registered", "not enough

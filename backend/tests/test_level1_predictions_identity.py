@@ -502,6 +502,14 @@ class TestPredictedValueMigration(Level1Base):
         self.assertEqual((rows[0]["predicted_probability"], rows[0]["uncertainty_std"]), (0.42, 7.5))
 
         # and the application works against the re-upgraded schema
+        # Downgrading below the sessions migration drops the stored sessions, so the old cookie is (rightly) refused:
+        # sign in again, as a real user would after such a rollback.
+        from sqlalchemy import text
+        from backend.app.config import database
+        with database.db_connection() as conn:
+            email = conn.execute(text("SELECT u.email FROM users u JOIN memberships m ON m.user_id = u.id "
+                                      "WHERE m.organization_id = :o ORDER BY u.id LIMIT 1"), {"o": org_id}).scalar()
+        self.assertEqual(client.post("/api/auth/login", json={"email": email, "password": "correct-horse-battery-staple"}).status_code, 200)
         self.rank(client, case_id)
         self.assertIsNotNone(self.listing(client, case_id)[0]["latest_prediction"]["predicted_value"])
 

@@ -2,21 +2,24 @@
 NOT RUNTIME-TESTED IN THE SANDBOX: fastapi is not installed here. Syntax-
 validated via py_compile only -- see README "Sandbox limitations".
 """
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 
 from backend.app.config.settings import settings
 from backend.app.schemas.auth_schemas import (
     SignupRequest, LoginRequest, SignupResponse, LoginResponse, MeResponse,
 )
 from backend.app.services import auth_service, audit_service
-from backend.app.security.sessions import create_session_token
+from backend.app.schemas.errors import TooManyAttempts, ValidationError
+from backend.app.security import login_throttle
+from backend.app.repositories import sessions_repo
+from backend.app.security.sessions import start_session
 from backend.app.api.dependencies import get_current_actor, AuthContext
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 def _set_session_cookie(response: Response, user_id: int, organization_id: int) -> None:
-    token = create_session_token(user_id, organization_id)
+    token = start_session(user_id, organization_id)
     response.set_cookie(
         key=settings.SESSION_COOKIE_NAME,
         value=token,
@@ -38,8 +41,17 @@ def signup(body: SignupRequest, response: Response):
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(body: LoginRequest, response: Response):
-    result = auth_service.log_in(body)
+def login(body: LoginRequest, request: Request, response: Response):
+    address = request.client.host if request.client else "unknown"
+    wait = login_throttle.throttle.retry_after(address, body.email)
+    if wait:  # refused before any password work is done, so guessing a locked account costs the server nothing
+        raise TooManyAttempts(wait, "Too many sign-in attempts. Please wait a few minutes and try again.")
+    try:
+        result = auth_service.log_in(body)
+    except ValidationError:
+        login_throttle.throttle.record_failure(address, body.email)
+        raise
+    login_throttle.throttle.record_success(address, body.email)
     user_id = result["user"]["id"]
     org_id = result["memberships"][0]["organization_id"]
     _set_session_cookie(response, user_id, org_id)
@@ -50,6 +62,7 @@ def login(body: LoginRequest, response: Response):
 @router.post("/logout")
 def logout(response: Response, actor: AuthContext = Depends(get_current_actor)):
     audit_service.log(actor.organization_id, actor.user["id"], "auth.logout")
+    sessions_repo.revoke_session(actor.session_id)  # server-side: a copy of the cookie stops working too
     response.delete_cookie(settings.SESSION_COOKIE_NAME)
     return {"ok": True}
 

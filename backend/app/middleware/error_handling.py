@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError as PydanticValidationError
 
-from backend.app.schemas.errors import ValidationError
+from backend.app.schemas.errors import TooManyAttempts, ValidationError
 from backend.app.config.settings import settings
 
 logger = logging.getLogger("rdopt")
@@ -30,6 +30,11 @@ def register_error_handlers(app: FastAPI) -> None:
         if err.field:
             body["field"] = err.field
         return JSONResponse(status_code=400, content=body)
+
+    @app.exception_handler(TooManyAttempts)
+    async def handle_too_many_attempts(request: Request, err: TooManyAttempts):
+        return JSONResponse(status_code=429, content={"error": err.message},
+                            headers={"Retry-After": str(err.retry_after_seconds)})
 
     @app.exception_handler(RequestValidationError)
     async def handle_request_shape_error(request: Request, err: RequestValidationError):
@@ -57,6 +62,15 @@ def register_error_handlers(app: FastAPI) -> None:
         # and leaves the LookupError handler's deliberate "not found" behavior,
         # and every existing `raise LookupError(...)` call site, untouched.
         logger.exception("Unhandled KeyError on %s %s", request.method, request.url.path)
+        if settings.is_production:
+            return JSONResponse(status_code=500, content={"error": "Something went wrong. Please try again."})
+        return JSONResponse(status_code=500, content={"error": "Something went wrong.", "dev_detail": str(err)})
+
+    @app.exception_handler(IndexError)
+    async def handle_accidental_index_error(request: Request, err: IndexError):
+        # IndexError is also a LookupError: without this, a bug such as "list index out of range" would be reported
+        # to the client as a 404 with the raw Python message. Same treatment as KeyError above.
+        logger.exception("Unhandled IndexError on %s %s", request.method, request.url.path)
         if settings.is_production:
             return JSONResponse(status_code=500, content={"error": "Something went wrong. Please try again."})
         return JSONResponse(status_code=500, content={"error": "Something went wrong.", "dev_detail": str(err)})

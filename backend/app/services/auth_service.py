@@ -1,3 +1,5 @@
+import functools
+
 from backend.app.repositories import organizations_repo, users_repo, memberships_repo, subscriptions_repo, invitations_repo
 from backend.app.security.passwords import hash_password, verify_password
 from backend.app.schemas.auth_schemas import SignupRequest, LoginRequest
@@ -57,6 +59,12 @@ def _sign_up_via_invite(body: SignupRequest) -> dict:
     }
 
 
+@functools.lru_cache(maxsize=1)
+def _dummy_password_hash() -> str:
+    """A well-formed hash of a throwaway value, made once, used only to spend the same time as a real check."""
+    return hash_password("this-account-does-not-exist")
+
+
 def log_in(body: LoginRequest) -> dict:
     """Verifies credentials and returns the user + their organizations.
     Raises ValidationError with a deliberately generic message on any
@@ -65,6 +73,9 @@ def log_in(body: LoginRequest) -> dict:
 
     generic_error = ValidationError("Incorrect email or password.")
     if not user or not user["is_active"]:
+        # Do the same expensive check a real account would get, so the response time does not reveal whether this
+        # email has an account (measured in review: 3 ms for an unknown email against 224 ms for a known one).
+        verify_password(body.password, user["password_hash"] if user else _dummy_password_hash())
         raise generic_error
     if not verify_password(body.password, user["password_hash"]):
         raise generic_error

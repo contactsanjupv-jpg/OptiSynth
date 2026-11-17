@@ -16,6 +16,7 @@ from backend.app.schemas.errors import ValidationError  # noqa: E402
 from backend.app.services import change_case_lifecycle_rules as rules  # noqa: E402
 from backend.tests import evidence_fixtures as F  # noqa: E402
 from backend.tests._api_base import SPEC, IsolatedApiTestCase  # noqa: E402
+from backend.tests.test_migration_portability import POSTGRES_URL  # noqa: E402
 
 HEAD = ["crosslinker_ratio", "cure_temp_c", "salt_spray_hours"]
 PASSWORD = "correct-horse-battery-staple"
@@ -527,8 +528,115 @@ class TestArchivedAtMigration(LifecycleBase):
         self.assertNotIn("archived_at", self._columns())
         self._alembic("upgrade", "head")
         self.assertIn("archived_at", self._columns())
+        # Downgrading below the sessions migration drops the stored sessions, so the old cookie is (rightly) refused:
+        # sign in again, as a real user would after such a rollback.
+        from sqlalchemy import text
+        from backend.app.config import database
+        with database.db_connection() as conn:
+            email = conn.execute(text("SELECT u.email FROM users u JOIN memberships m ON m.user_id = u.id "
+                                      "WHERE m.organization_id = :o ORDER BY u.id LIMIT 1"), {"o": org_id}).scalar()
+        self.assertEqual(client.post("/api/auth/login", json={"email": email, "password": "correct-horse-battery-staple"}).status_code, 200)
         case = self.get(client, case_id)
         self.assertIsNone(case["archived_at"])  # a re-upgraded row is simply not archived: nothing is invented
+
+
+@unittest.skipUnless(POSTGRES_URL, "set OPTISYNTH_TEST_POSTGRES_URL to run the PostgreSQL scenarios")
+class TestDeletionPostgres(TestDeletion):
+    """Every TestDeletion scenario, with the application running against a real PostgreSQL schema built by the migrations.
+
+    PostgreSQL checks the ON DELETE RESTRICT on predictions.dataset_version_id differently from SQLite, so the deletion
+    order and the refusals are re-proved there. setUpClass/tearDownClass deliberately do NOT call the SQLite parent: the
+    schema is private to this class, and everything global that is touched is put back by cleanups registered the moment
+    each step succeeds, so a failure half-way through setup still restores the process (unittest runs class cleanups even
+    when setUpClass raises)."""
+    dir_name = "_test_env_lifecycle_pg"
+
+    @classmethod
+    def setUpClass(cls):
+        import shutil
+        import uuid
+        from alembic import command
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.engine import make_url
+        from backend.app.config import database
+        from backend.app.config.settings import settings
+        from backend.app.services import qualification_dataset_service as svc
+        from backend.tests._api_base import unit_aware_client
+        from backend.tests.test_migration_portability import _config
+
+        # 1. remember what will be changed, and register the undo BEFORE changing anything
+        saved = {"db_url": settings.DATABASE_URL, "engine": database.engine, "env_url": os.environ.get("DATABASE_URL")}
+        cls._pg = {"schema": None, "admin": None, "done": False}
+
+        def snapshot_uploads():
+            root = svc.UPLOAD_ROOT
+            return {(d, f) for d in (os.listdir(root) if os.path.isdir(root) else [])
+                    for f in (os.listdir(os.path.join(root, d)) if os.path.isdir(os.path.join(root, d)) else [])}, \
+                   set(os.listdir(root)) if os.path.isdir(root) else None
+        uploads_before = snapshot_uploads()
+
+        def restore():
+            if cls._pg["done"]:
+                return
+            cls._pg["done"] = True
+            try:
+                if database.engine is not saved["engine"]:
+                    database.engine.dispose()           # release every connection so the schema can be dropped
+            finally:
+                settings.DATABASE_URL, database.engine = saved["db_url"], saved["engine"]
+                if saved["env_url"] is None:
+                    os.environ.pop("DATABASE_URL", None)
+                else:
+                    os.environ["DATABASE_URL"] = saved["env_url"]
+                try:
+                    if cls._pg["admin"] is not None and cls._pg["schema"]:
+                        with cls._pg["admin"].connect() as conn:
+                            conn.execute(text(f'DROP SCHEMA IF EXISTS "{cls._pg["schema"]}" CASCADE'))
+                finally:
+                    if cls._pg["admin"] is not None:
+                        cls._pg["admin"].dispose()
+                    # remove only the evidence files THIS class created (a fresh schema reuses organisation ids 1, 2, ...)
+                    files_before, dirs_before = uploads_before
+                    root = svc.UPLOAD_ROOT
+                    if os.path.isdir(root):
+                        for d in os.listdir(root):
+                            folder = os.path.join(root, d)
+                            if not os.path.isdir(folder):
+                                continue
+                            for f in os.listdir(folder):
+                                if (d, f) not in files_before:
+                                    try:
+                                        os.remove(os.path.join(folder, f))
+                                    except OSError:
+                                        pass
+                            if dirs_before is not None and d not in dirs_before:
+                                shutil.rmtree(folder, ignore_errors=True)
+        cls.addClassCleanup(restore)
+
+        # 2. a private schema, then point the application at it and build it with the real migrations
+        cls._pg["admin"] = create_engine(POSTGRES_URL, isolation_level="AUTOCOMMIT")
+        schema = f"lifedel_{uuid.uuid4().hex[:10]}"
+        with cls._pg["admin"].connect() as conn:
+            conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+        cls._pg["schema"] = schema
+        url = make_url(POSTGRES_URL).update_query_dict({"options": f"-csearch_path={schema}"}).render_as_string(hide_password=False)
+        os.environ["DATABASE_URL"] = url
+        settings.DATABASE_URL = url
+        database.engine = database._make_engine()
+        bound = database.engine.url.render_as_string(hide_password=False)
+        assert make_url(bound).drivername.startswith("postgresql") and schema in bound, (
+            f"Test isolation failure: engine bound to {database.engine.url!r}")
+        command.upgrade(_config(), "head")
+
+        from backend.app.main import app
+        cls.client_factory = staticmethod(lambda: unit_aware_client(app))
+        cls._n = 0
+
+    @classmethod
+    def tearDownClass(cls):
+        # The registered cleanup does the work (and also runs if setUpClass failed); calling it here makes it immediate.
+        # The SQLite parent's tearDownClass is intentionally not called: there is no SQLite directory to remove.
+        cls.doClassCleanups()
 
 
 if __name__ == "__main__":

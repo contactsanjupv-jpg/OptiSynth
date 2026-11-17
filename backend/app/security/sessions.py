@@ -17,9 +17,13 @@ re-checks organization membership from the database on every request, so a
 deactivated user or revoked membership loses access immediately rather than
 at next login.
 """
+import secrets
+from datetime import datetime, timedelta, timezone
+
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 from backend.app.config.settings import settings
+from backend.app.repositories import sessions_repo
 
 _SALT = "rdopt-session-v1"
 
@@ -28,8 +32,23 @@ def _serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(settings.SECRET_KEY, salt=_SALT)
 
 
-def create_session_token(user_id: int, organization_id: int) -> str:
-    return _serializer().dumps({"user_id": user_id, "organization_id": organization_id})
+def create_session_token(user_id: int, organization_id: int, session_id: str | None = None) -> str:
+    """Signs a token. Pure (no database). Real sessions are started with start_session(), which also stores them."""
+    payload = {"user_id": user_id, "organization_id": organization_id}
+    if session_id is not None:
+        payload["sid"] = session_id
+    return _serializer().dumps(payload)
+
+
+def start_session(user_id: int, organization_id: int) -> str:
+    """Stores a new server-side session (repositories/sessions_repo.py) and returns the signed token that carries its
+    random id. The API accepts the token only while that stored session is unrevoked and unexpired (see
+    api/dependencies.py), which is what lets logout really end it. A token without a session id (issued before server-side
+    sessions existed) is refused there."""
+    session_id = secrets.token_urlsafe(24)
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=settings.SESSION_LIFETIME_HOURS)).isoformat()
+    sessions_repo.create_session(session_id, user_id, organization_id, expires_at)
+    return create_session_token(user_id, organization_id, session_id)
 
 
 def read_session_token(token: str) -> dict | None:
