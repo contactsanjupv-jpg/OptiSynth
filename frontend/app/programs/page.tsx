@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/layout/AppShell";
 import { Topbar } from "@/components/layout/Topbar";
 import { Breadcrumbs } from "@/components/layout/Breadcrumbs";
@@ -19,6 +19,8 @@ import {
 } from "@/lib/api";
 import { ApiRequestError } from "@/lib/api/http";
 import { formatRelativeTime } from "@/lib/utils/format";
+import "@/styles/components/stage-panel.css";
+import { listPortfolioPrograms, STAGE_LABELS, type StageKey } from "@/lib/api/portfolio";
 import type { ChangeCase, ChangeCaseUpdate, TriggerType } from "@/lib/api/change-cases";
 
 const TRIGGER_LABELS: Record<TriggerType, string> = {
@@ -30,7 +32,7 @@ const TRIGGER_LABELS: Record<TriggerType, string> = {
 
 // What each badge means. These are the only meanings the product gives the statuses, and they match
 // the server (backend change_case_lifecycle_rules.py). "Active" is never set automatically: a team
-// member starts the diagnostic with the "Start diagnostic" action below.
+// member starts the program with the "Start program" action below.
 const STATUS_LABEL: Record<string, string> = {
   draft: "Draft",
   active: "Active",
@@ -42,8 +44,8 @@ const STATUS_TONE: Record<string, "neutral" | "success" | "warning"> = {
   completed: "success",
 };
 const STATUS_MEANING: Record<string, string> = {
-  draft: "Setup in progress. The diagnostic has not been started.",
-  active: "In progress. A team member started the diagnostic. This is workflow progress, not a qualification result.",
+  draft: "Setup in progress. The program has not been started.",
+  active: "In progress. A team member started the program. This is workflow progress, not a qualification result.",
   completed: "Closed record. It cannot be reopened. Recorded physical outcomes are retained.",
 };
 
@@ -68,12 +70,26 @@ function unitProblem(unit: string): string | null {
   if (!u) return "needs a unit";
   const lower = u.toLowerCase();
   if (!DIMENSIONLESS_UNITS.includes(u) && (DIMENSIONLESS_UNITS.includes(lower) || AMBIGUOUS_UNIT_SPELLINGS.includes(lower))) {
-    return `"${u}" does not say whether the values are a pure number, a fraction (0-1) or a percentage (0-100) -- enter dimensionless, fraction or %`;
+    return `"${u}" does not say whether the values are a pure number, a fraction (0-1) or a percentage (0-100). Enter dimensionless, fraction or %`;
   }
   return null;
 }
 
-export default function ChangeCasesPage() {
+const FILTER_TEXT: Record<string, string> = {
+  active: "Active programs",
+  evidence_review: "Programs in evidence review",
+  tests_pending: "Programs with pending tests",
+  attention: "Programs that need attention",
+};
+
+function describeFilter(filter: string, stage: string, issue: string): string {
+  if (filter) return FILTER_TEXT[filter] ?? "Filtered programs";
+  if (stage) return `Stage: ${stage.split(",").map((s) => STAGE_LABELS[s as StageKey] ?? s).join(", ")}`;
+  if (issue) return "Programs with a matching open issue";
+  return "";
+}
+
+function ProgramsPageInner() {
   const { checking } = useRequireAuth();
   const [cases, setCases] = useState<ChangeCase[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +113,12 @@ export default function ChangeCasesPage() {
   const [dialog, setDialog] = useState<DialogState>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const params = useSearchParams();
+  const filterParam = params.get("filter") ?? "";
+  const stageParam = params.get("stage") ?? "";
+  const issueParam = params.get("issue") ?? "";
+  const filtering = Boolean(filterParam || stageParam || issueParam);
+  const [filterIds, setFilterIds] = useState<Set<number> | null>(null);
   // Edit form (filled from the saved record each time the edit dialog opens)
   const [editName, setEditName] = useState("");
   const [editTrigger, setEditTrigger] = useState<TriggerType>("regulatory_restriction");
@@ -105,17 +127,26 @@ export default function ChangeCasesPage() {
   const [editDirection, setEditDirection] = useState<"maximize" | "minimize">("maximize");
 
   function load(includeArchived = showArchived) {
-    listChangeCases(includeArchived)
-      .then((rows) => { setCases(rows); setError(null); })
-      .catch(() => setError("Could not load change cases."));
+    const wanted = filtering
+      ? listPortfolioPrograms({ filter: filterParam, stage: stageParam, issue: issueParam })
+      : Promise.resolve(null);
+    Promise.all([listChangeCases(includeArchived), wanted])
+      .then(([rows, match]) => {
+        setCases(rows);
+        setFilterIds(match ? new Set(match.programs.map((p) => p.id)) : null);
+        setError(null);
+      })
+      .catch(() => setError("Could not load programs. Try again."));
   }
 
   useEffect(() => {
     if (!checking) load(showArchived);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checking, showArchived]);
+  }, [checking, showArchived, filterParam, stageParam, issueParam]);
 
   if (checking) return null;
+
+  const visible = (cases ?? []).filter((c) => !filterIds || filterIds.has(c.id));
 
   function openDialog(kind: NonNullable<DialogState>["kind"], c: ChangeCase) {
     setDialogError(null);
@@ -136,7 +167,7 @@ export default function ChangeCasesPage() {
     setDialogError(null);
   }
 
-  /** Runs one action on one diagnostic. The row's buttons and the dialog stay disabled while it runs,
+  /** Runs one action on one program. The row's buttons and the dialog stay disabled while it runs,
    *  so a double click can't submit twice; a failure is shown in the dialog with the user's input kept. */
   async function run(c: ChangeCase, action: () => Promise<unknown>, success: string) {
     if (busyId !== null) return;
@@ -159,7 +190,7 @@ export default function ChangeCasesPage() {
   function saveEdit(c: ChangeCase) {
     const spec = parseSpec(c);
     const name = editName.trim();
-    if (!name) { setDialogError("A diagnostic needs a name."); return; }
+    if (!name) { setDialogError("A program needs a name."); return; }
     const changes: ChangeCaseUpdate = {};
     if (name !== c.name) changes.name = name;
     if (editTrigger !== c.trigger_type) changes.trigger_type = editTrigger;
@@ -191,7 +222,7 @@ export default function ChangeCasesPage() {
         setError("Each input feature and the target need a different name.");
         return;
       }
-      // Every modelled field and the target needs an explicit unit, and units cannot be edited after the diagnostic is
+      // Every modelled field and the target needs an explicit unit, and units cannot be edited after the program is
       // created. The server refuses anything less (and is the authority); this catches it before sending.
       const unitProblems = [
         ...rows.map((r) => ({ field: r.name, problem: unitProblem(r.unit) })),
@@ -225,29 +256,29 @@ export default function ChangeCasesPage() {
 
   return (
     <AppShell>
-      <Topbar><Breadcrumbs items={[{ label: "Diagnostics" }]} /></Topbar>
+      <Topbar><Breadcrumbs items={[{ label: "Programs" }]} /></Topbar>
       <div className="app-shell__content">
         <PageHeader
-          title="Qualification diagnostics"
-          subtitle="Forced-substitution qualification diagnostics -- when a material or supplier change forces a requalification decision."
+          title="Programs"
+          subtitle="Track each material or supplier change from intake to decision."
         />
 
         {error && <ErrorCallout message={error} />}
 
         <div style={{ marginBottom: 16 }}>
           <Button variant="primary" onClick={() => setShowForm((s) => !s)}>
-            {showForm ? "Cancel" : "New diagnostic"}
+            {showForm ? "Cancel" : "New program"}
           </Button>
         </div>
 
         {showForm && (
           <Card padding="lg" style={{ marginBottom: 20 }}>
-            <CardHeader><CardTitle>New diagnostic</CardTitle></CardHeader>
+            <CardHeader><CardTitle>New program</CardTitle></CardHeader>
             <form onSubmit={handleCreate} style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 480 }}>
               <div>
                 <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Name</label>
                 <input required value={name} onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. AquaShield 400 -- PFAS Fluorosurfactant Replacement"
+                  placeholder="For example, AquaShield 400 PFAS replacement"
                   style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
               </div>
               <div>
@@ -264,12 +295,12 @@ export default function ChangeCasesPage() {
                   style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
               </div>
               <p style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)", margin: 0 }}>
-                One diagnostic covers ONE qualification requirement. Define the fields the analysis uses below;
+                One program covers ONE qualification requirement. Define the fields the analysis uses below;
                 your own spreadsheet or report headers are matched to these in the evidence review, so they do
                 not have to be identical. Every field and the target needs an explicit unit, and units cannot be changed
-                after the diagnostic is created. Use the real unit (degC, h, mm ...), or say so explicitly:{" "}
+                after the program is created. Use the real unit (degC, h, mm ...), or say so explicitly:{" "}
                 <strong>dimensionless</strong> for a pure number, <strong>fraction</strong> for a ratio between 0 and 1,
-                <strong> %</strong> for a percentage -- these are different units and are never converted into each
+                <strong> %</strong> for a percentage. These are different units and are never converted into each
                 other. Any other label you type is a custom unit: it is matched by exact symbol only (letter case matters, spacing is ignored) and is not
                 checked dimensionally. Values are converted only where an exact conversion exists, and are never guessed.
               </p>
@@ -335,13 +366,13 @@ export default function ChangeCasesPage() {
               <datalist id="unit-suggestions">
                 {UNIT_SUGGESTIONS.map((u) => <option key={u} value={u} />)}
               </datalist>
-              <Button type="submit" variant="primary" loading={creating}>Create diagnostic</Button>
+              <Button type="submit" variant="primary" loading={creating}>Create program</Button>
             </form>
           </Card>
         )}
 
         <Card padding="lg">
-          <CardHeader><CardTitle>All diagnostics</CardTitle></CardHeader>
+          <CardHeader><CardTitle>All programs</CardTitle></CardHeader>
           {notice && (
             <div role="status" style={{ marginBottom: 12, padding: "8px 12px", borderRadius: "var(--radius-sm)", fontSize: "var(--text-sm)",
               background: "var(--color-success-subtle)", border: "1px solid var(--color-success-border)", color: "var(--color-success)",
@@ -352,53 +383,61 @@ export default function ChangeCasesPage() {
             </div>
           )}
           <p style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)", margin: "0 0 12px" }}>
-            <strong>Draft</strong> = setup in progress. <strong>Active</strong> = a team member started the diagnostic
-            (workflow progress, not a qualification result). <strong>Completed</strong> = closed record.
-            <strong> Archived</strong> = hidden from this list and read-only; everything is kept.
+            Draft means setup is in progress. Active means a team member started the program, which is workflow progress and not a
+            qualification result. Completed programs are closed records. Archived programs are hidden and read-only, and everything is kept.
           </p>
           <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "var(--text-xs)", color: "var(--color-text-secondary)", marginBottom: 8 }}>
             <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
             Show archived
           </label>
-          {!cases && <Spinner label="Loading change cases…" />}
-          {cases && cases.length === 0 && (
-            <p style={{ fontSize: "var(--text-sm)", color: "var(--color-text-tertiary)" }}>
-              {showArchived
-                ? "No diagnostics yet."
-                : "No diagnostics yet. Create one when a material or supplier change forces a requalification decision."}
+          {!cases && <Spinner label="Loading programs" />}
+          {filtering && (
+            <p className="programs-filter" role="status">
+              {describeFilter(filterParam, stageParam, issueParam)}.{" "}
+              <Link href="/programs" style={{ color: "inherit", textDecoration: "underline", textUnderlineOffset: 3 }}>Clear filter</Link>
             </p>
           )}
-          {cases && cases.map((c) => {
+          {cases && visible.length === 0 && (
+            <p style={{ fontSize: "var(--text-sm)", color: "var(--color-text-tertiary)" }}>
+              {filtering
+                ? "No programs match this filter."
+                : showArchived
+                  ? "No programs yet."
+                  : "No programs yet. Create one when a material or supplier change forces a requalification decision."}
+            </p>
+          )}
+          {cases && visible.map((c) => {
             const archived = Boolean(c.archived_at);
             const busy = busyId === c.id;
             return (
               <div key={c.id} style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap",
                 padding: "12px 0", borderBottom: "1px solid var(--color-border)", opacity: archived ? 0.8 : 1 }}>
                 <div style={{ minWidth: 220, flex: "1 1 260px" }}>
-                  <Link href={`/change-cases/${c.id}`} style={{ fontSize: "var(--text-sm)", fontWeight: 500, color: "inherit" }}>{c.name}</Link>
+                  <Link href={`/programs/${c.id}`} style={{ fontSize: "var(--text-sm)", fontWeight: 500, color: "inherit" }}>{c.name}</Link>
                   <div style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)" }}>
                     {TRIGGER_LABELS[c.trigger_type]}
-                    {c.restricted_substance && ` · ${c.restricted_substance}`}
-                    {" · created "}{formatRelativeTime(c.created_at)}
+                    {c.restricted_substance && `, ${c.restricted_substance}`}
+                    {", created "}{formatRelativeTime(c.created_at)}
                   </div>
                   <div style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)" }}>
-                    {c.dataset_count ?? 0} evidence upload{c.dataset_count === 1 ? "" : "s"} · {c.candidate_count ?? 0} candidate{c.candidate_count === 1 ? "" : "s"}
-                    {(c.prediction_count ?? 0) > 0 && " · ranked"}
-                    {(c.outcome_count ?? 0) > 0 && ` · ${c.outcome_count} physical outcome${c.outcome_count === 1 ? "" : "s"} recorded`}
+                    {c.dataset_count ?? 0} evidence upload{c.dataset_count === 1 ? "" : "s"}, {c.candidate_count ?? 0} candidate{c.candidate_count === 1 ? "" : "s"}
+                    {(c.prediction_count ?? 0) > 0 && ", ranked"}
+                    {(c.outcome_count ?? 0) > 0 && `, ${c.outcome_count} physical outcome${c.outcome_count === 1 ? "" : "s"} recorded`}
                   </div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
                   <div style={{ display: "flex", gap: 6 }} title={archived ? "Archived: hidden from the default list and read-only." : STATUS_MEANING[c.status]}>
                     {archived && <Badge tone="neutral">Archived</Badge>}
                     <Badge tone={STATUS_TONE[c.status] ?? "neutral"}>{STATUS_LABEL[c.status] ?? c.status}</Badge>
+                    {c.stage && <Badge tone="neutral">{STAGE_LABELS[c.stage as StageKey] ?? c.stage}</Badge>}
                   </div>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }} role="group" aria-label={`Actions for ${c.name}`}>
-                    <Button size="sm" variant="secondary" disabled={busy} onClick={() => router.push(`/change-cases/${c.id}`)}>Open</Button>
+                    <Button size="sm" variant="secondary" disabled={busy} onClick={() => router.push(`/programs/${c.id}`)}>Open</Button>
                     {!archived && c.status !== "completed" && (
                       <Button size="sm" variant="secondary" disabled={busy} onClick={() => openDialog("edit", c)}>Edit</Button>
                     )}
                     {!archived && c.status === "draft" && (
-                      <Button size="sm" variant="secondary" disabled={busy} onClick={() => openDialog("start", c)}>Start diagnostic</Button>
+                      <Button size="sm" variant="secondary" disabled={busy} onClick={() => openDialog("start", c)}>Start program</Button>
                     )}
                     {!archived && c.status === "active" && (
                       <Button size="sm" variant="secondary" disabled={busy} onClick={() => openDialog("complete", c)}>Mark completed</Button>
@@ -422,7 +461,7 @@ export default function ChangeCasesPage() {
           const spec = parseSpec(c);
           const unit = spec?.units?.[spec.target_metric];
           return (
-            <Dialog title="Edit diagnostic" onClose={closeDialog} busy={busyId !== null}
+            <Dialog title="Edit program" onClose={closeDialog} busy={busyId !== null}
               actions={<>
                 <Button variant="secondary" onClick={closeDialog} disabled={busyId !== null}>Cancel</Button>
                 <Button variant="primary" loading={busyId === c.id} onClick={() => saveEdit(c)}>Save changes</Button>
@@ -468,7 +507,7 @@ export default function ChangeCasesPage() {
                     </p>
                   )}
                   <p style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)", margin: "6px 0 0" }}>
-                    The input fields, target field and units define how evidence is read and can&apos;t be edited; create a new diagnostic to change them.
+                    The input fields, target field and units define how evidence is read and can&apos;t be edited; create a new program to change them.
                   </p>
                 </div>
               )}
@@ -477,12 +516,12 @@ export default function ChangeCasesPage() {
         })()}
 
         {dialog?.kind === "start" && (
-          <Dialog title="Start this diagnostic?" onClose={closeDialog} busy={busyId !== null}
+          <Dialog title="Start this program?" onClose={closeDialog} busy={busyId !== null}
             actions={<>
               <Button variant="secondary" onClick={closeDialog} disabled={busyId !== null}>Cancel</Button>
               <Button variant="primary" loading={busyId === dialog.c.id}
                 onClick={() => run(dialog.c, () => updateChangeCaseStatus(dialog.c.id, "active"), `“${dialog.c.name}” is now Active.`)}>
-                Start diagnostic
+                Start program
               </Button>
             </>}>
             {dialogError && <ErrorCallout message={dialogError} />}
@@ -494,7 +533,7 @@ export default function ChangeCasesPage() {
         )}
 
         {dialog?.kind === "complete" && (
-          <Dialog title="Mark this diagnostic completed?" onClose={closeDialog} busy={busyId !== null}
+          <Dialog title="Mark this program completed?" onClose={closeDialog} busy={busyId !== null}
             actions={<>
               <Button variant="secondary" onClick={closeDialog} disabled={busyId !== null}>Cancel</Button>
               <Button variant="primary" loading={busyId === dialog.c.id}
@@ -504,7 +543,7 @@ export default function ChangeCasesPage() {
             </>}>
             {dialogError && <ErrorCallout message={dialogError} />}
             <p style={{ margin: 0 }}>
-              <strong>{dialog.c.name}</strong> becomes a closed record. <strong>This cannot be undone:</strong> a completed diagnostic
+              <strong>{dialog.c.name}</strong> becomes a closed record. <strong>This cannot be undone:</strong> a completed program
               can&apos;t be reopened, edited, or given new candidates. Recorded physical outcomes are kept. Completing it is a record
               of your team&apos;s decision, not a qualification result.
             </p>
@@ -512,7 +551,7 @@ export default function ChangeCasesPage() {
         )}
 
         {dialog?.kind === "archive" && (
-          <Dialog title="Archive this diagnostic?" onClose={closeDialog} busy={busyId !== null}
+          <Dialog title="Archive this program?" onClose={closeDialog} busy={busyId !== null}
             actions={<>
               <Button variant="secondary" onClick={closeDialog} disabled={busyId !== null}>Cancel</Button>
               <Button variant="primary" loading={busyId === dialog.c.id}
@@ -529,7 +568,7 @@ export default function ChangeCasesPage() {
         )}
 
         {dialog?.kind === "delete" && (
-          <Dialog title="Delete this diagnostic?" onClose={closeDialog} busy={busyId !== null}
+          <Dialog title="Delete this program?" onClose={closeDialog} busy={busyId !== null}
             actions={dialog.c.deletable ? (
               <>
                 <Button variant="secondary" onClick={closeDialog} disabled={busyId !== null}>Cancel</Button>
@@ -566,5 +605,13 @@ export default function ChangeCasesPage() {
         )}
       </div>
     </AppShell>
+  );
+}
+
+export default function ProgramsPage() {
+  return (
+    <Suspense fallback={null}>
+      <ProgramsPageInner />
+    </Suspense>
   );
 }

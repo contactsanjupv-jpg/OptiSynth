@@ -40,3 +40,19 @@ def user_is_active(user_id: int) -> bool:
             text("SELECT is_active FROM users WHERE id = :id"), {"id": user_id}
         ).mappings().first()
         return bool(row and row["is_active"])
+
+
+def update_display_name(user_id: int, display_name) -> None:
+    with db_transaction() as conn:
+        conn.execute(text("UPDATE users SET display_name = :n WHERE id = :id"), {"n": display_name, "id": user_id})
+
+
+def get_password_hash(user_id: int):
+    with db_connection() as conn:
+        row = conn.execute(text("SELECT password_hash FROM users WHERE id = :id"), {"id": user_id}).mappings().first()
+        return row["password_hash"] if row else None
+
+
+def set_password_hash(user_id: int, password_hash: str) -> None:
+    with db_transaction() as conn:
+        conn.execute(text("UPDATE users SET password_hash = :h WHERE id = :id"), {"h": password_hash, "id": user_id})

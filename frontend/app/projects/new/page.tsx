@@ -147,11 +147,11 @@ export default function NewProjectPage() {
             <div className="wizard__review">
               <h3>Review</h3>
               <dl>
-                <dt>Name</dt><dd>{name || "—"}</dd>
-                <dt>Objective</dt><dd>{objective || "—"}</dd>
-                <dt>Target metric</dt><dd>{targetMetric || "—"} ({direction})</dd>
+                <dt>Name</dt><dd>{name || "Not set"}</dd>
+                <dt>Objective</dt><dd>{objective || "Not set"}</dd>
+                <dt>Target metric</dt><dd>{targetMetric || "Not set"} ({direction})</dd>
                 <dt>Target value</dt><dd>{targetValue || "not set"}</dd>
-                <dt>Feature columns</dt><dd>{featureColumns.join(", ") || "—"}</dd>
+                <dt>Feature columns</dt><dd>{featureColumns.join(", ") || "Not set"}</dd>
                 <dt>Constraints</dt>
                 <dd>{constraints.length ? constraints.map((c) => `${c.column} ${c.op} ${c.value}`).join("; ") : "none"}</dd>
               </dl>

@@ -139,7 +139,7 @@ export default function ProjectSettingsPage() {
           <>
             <dl style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: "8px 16px", fontSize: "var(--text-sm)" }}>
               <dt style={{ color: "var(--color-text-tertiary)" }}>Name</dt><dd>{project.name}</dd>
-              <dt style={{ color: "var(--color-text-tertiary)" }}>Objective</dt><dd>{project.objective || "—"}</dd>
+              <dt style={{ color: "var(--color-text-tertiary)" }}>Objective</dt><dd>{project.objective || "Not set"}</dd>
               <dt style={{ color: "var(--color-text-tertiary)" }}>Target metric</dt><dd>{project.target_metric} ({project.direction})</dd>
               <dt style={{ color: "var(--color-text-tertiary)" }}>Target value</dt><dd>{project.target_value ?? "not set"}</dd>
               <dt style={{ color: "var(--color-text-tertiary)" }}>Feature columns</dt><dd>{project.feature_columns.join(", ")}</dd>
@@ -173,7 +173,7 @@ export default function ProjectSettingsPage() {
               <>
                 <input style={{ ...editInputStyle, opacity: 0.5 }} value={featureColumnsText} disabled />
                 <p style={lockedNoteStyle}>
-                  Locked -- this project already has {project.experiment_count} experiment(s). Changing feature
+                  Locked. This project already has {project.experiment_count} experiment(s). Changing feature
                   columns now would desync existing data. Create a new project to use different variables.
                 </p>
               </>
@@ -184,7 +184,7 @@ export default function ProjectSettingsPage() {
             <label style={editLabelStyle}>Constraints</label>
             {hasExperiments ? (
               <p style={lockedNoteStyle}>
-                Locked for the same reason as feature columns above -- existing experiment data would desync.
+                Locked for the same reason as feature columns above. Existing experiment data would no longer match.
               </p>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>

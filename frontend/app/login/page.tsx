@@ -6,6 +6,7 @@ import { Atom } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { ErrorCallout } from "@/components/ui/Feedback";
 import { login, signup, previewInvitation } from "@/lib/api";
+import { getAuthConfig } from "@/lib/api/admin";
 import { ApiRequestError } from "@/lib/api/http";
 import { setSessionCache } from "@/lib/auth/session";
 import type { InvitationPreview } from "@/lib/api/team";
@@ -18,7 +19,8 @@ function LoginPageInner() {
   const searchParams = useSearchParams();
   const inviteToken = searchParams.get("invite");
 
-  const [mode, setMode] = useState<Mode>("signup");
+  const [mode, setMode] = useState<Mode>("login");
+  const [publicSignup, setPublicSignup] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [organizationName, setOrganizationName] = useState("");
@@ -31,6 +33,12 @@ function LoginPageInner() {
   const [checkingInvite, setCheckingInvite] = useState(!!inviteToken);
 
   useEffect(() => {
+    getAuthConfig()
+      .then((c) => { setPublicSignup(c.public_signup); if (c.public_signup && !inviteToken) setMode("signup"); })
+      .catch(() => setPublicSignup(false));
+  }, [inviteToken]);
+
+  useEffect(() => {
     if (!inviteToken) return;
     previewInvitation(inviteToken)
       .then((preview) => {
@@ -38,7 +46,7 @@ function LoginPageInner() {
         setEmail(preview.email);
         setMode("signup");
       })
-      .catch(() => setInviteError("This invite link is no longer valid -- it may have expired or already been used."))
+      .catch(() => setInviteError("This invitation link is no longer valid. It may have expired or already been used."))
       .finally(() => setCheckingInvite(false));
   }, [inviteToken]);
 
@@ -57,7 +65,7 @@ function LoginPageInner() {
         displayName: res.user.display_name,
         organizationId: res.organization.id,
       });
-      router.push("/change-cases");
+      router.push("/overview");
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : "Something went wrong.");
     } finally {
@@ -76,7 +84,7 @@ function LoginPageInner() {
         displayName: res.user.display_name,
         organizationId: res.memberships[0]?.organization_id ?? 0,
       });
-      router.push("/change-cases");
+      router.push("/overview");
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : "Something went wrong.");
     } finally {
@@ -106,10 +114,12 @@ function LoginPageInner() {
         )}
 
         {!inviteToken && (
-          <p className="auth-card__subtitle">Find better candidates with fewer experiments.</p>
+          <p className="auth-card__subtitle">
+            {publicSignup ? "Find better candidates with fewer experiments." : "Sign in to your organization. Access is by invitation."}
+          </p>
         )}
 
-        {!invitePreview && !inviteToken && (
+        {!invitePreview && !inviteToken && publicSignup && (
           <div className="auth-card__mode-switch">
             <button
               className={`auth-card__mode-btn${mode === "signup" ? " auth-card__mode-btn--active" : ""}`}

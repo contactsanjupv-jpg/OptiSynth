@@ -40,7 +40,7 @@ export default function ProjectLayout({ children }: { children: ReactNode }) {
         {project && (
           <p style={{ color: "var(--color-text-secondary)", fontSize: "var(--text-sm)", marginBottom: 20 }}>
             Target: {project.target_metric} {project.direction === "maximize" ? "\u2265" : "\u2264"}{" "}
-            {project.target_value ?? "not set"} · {project.experiment_count ?? 0} experiments
+            {project.target_value ?? "not set"}, {project.experiment_count ?? 0} experiments
           </p>
         )}
 

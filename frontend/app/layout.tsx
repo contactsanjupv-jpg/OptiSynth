@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import "@/styles/globals.css";
 
 export const metadata: Metadata = {
-  title: "OptiSynth — Forced-Substitution Qualification Diagnostic",
+  title: "OptiSynth",
   description: "Structure your qualification evidence, estimate candidate substitutes, and plan targeted physical validation.",
 };
 

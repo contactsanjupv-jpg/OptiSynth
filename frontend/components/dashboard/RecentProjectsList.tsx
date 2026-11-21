@@ -14,7 +14,7 @@ export function RecentProjectsList({ projects }: { projects: DashboardProjectSum
       </CardHeader>
 
       {projects.length === 0 ? (
-        <p className="recent-projects__empty">No projects yet — create one to get started.</p>
+        <p className="recent-projects__empty">No projects yet. Create one to get started.</p>
       ) : (
         <div className="recent-projects__list">
           {projects.slice(0, 6).map((p) => {
@@ -38,7 +38,7 @@ export function RecentProjectsList({ projects }: { projects: DashboardProjectSum
                   <span className="recent-projects__progress-label">{progressPct}%</span>
                 </div>
                 <span className="recent-projects__best">
-                  {p.best_value !== null ? formatNumber(p.best_value) : "—"}
+                  {p.best_value !== null ? formatNumber(p.best_value) : "Not set"}
                 </span>
                 <span className="recent-projects__count">{p.experiment_count} exp.</span>
                 <span className="recent-projects__time">{formatRelativeTime(p.updated_at)}</span>

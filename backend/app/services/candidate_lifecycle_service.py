@@ -3,12 +3,12 @@ Managing a candidate substitute after it exists: editing its name and input valu
 the analysis (archive) and restoring it, and permanently deleting it when -- and only when -- nothing
 depends on it. The rules live in candidate_lifecycle_rules.py.
 
-Every function is organization-scoped: the diagnostic is looked up through the repository with the
-caller's organization, and the candidate must belong to THAT diagnostic. Anything else (missing,
-another organization's, another diagnostic's) is the same LookupError -> 404, so the response never
+Every function is organization-scoped: the program is looked up through the repository with the
+caller's organization, and the candidate must belong to THAT program. Anything else (missing,
+another organization's, another program's) is the same LookupError -> 404, so the response never
 reveals whether an id exists elsewhere.
 
-Callers (the routes) have already refused an archived diagnostic (change_case_routes._writable_case).
+Callers (the routes) have already refused an archived program (change_case_routes._writable_case).
 What these functions return is the candidate in exactly the shape GET .../candidates returns, so the
 screen can replace its copy without a second request.
 """

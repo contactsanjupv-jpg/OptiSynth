@@ -2,23 +2,17 @@
 
 import { useEffect, useState } from "react";
 import { Copy, X } from "lucide-react";
-import { AppShell } from "@/components/layout/AppShell";
-import { Topbar } from "@/components/layout/Topbar";
-import { Breadcrumbs } from "@/components/layout/Breadcrumbs";
-import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { ErrorCallout, Spinner } from "@/components/ui/Feedback";
-import { useRequireAuth } from "@/lib/auth/useRequireAuth";
 import { getMe, listMembers, listPendingInvitations, inviteMember, revokeInvitation, removeMember, updateMemberRole } from "@/lib/api";
 import { ApiRequestError } from "@/lib/api/http";
 import { formatRelativeTime } from "@/lib/utils/format";
 import type { Member, Invitation } from "@/lib/api/team";
 import type { MembershipRole } from "@/types";
 
-export default function TeamPage() {
-  const { checking } = useRequireAuth();
+export function TeamPanel() {
   const [members, setMembers] = useState<Member[] | null>(null);
   const [invitations, setInvitations] = useState<Invitation[] | null>(null);
   const [myRole, setMyRole] = useState<MembershipRole | null>(null);
@@ -50,10 +44,9 @@ export default function TeamPage() {
   }
 
   useEffect(() => {
-    if (!checking) load();
-  }, [checking]);
-
-  if (checking) return null;
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const canManage = myRole === "owner" || myRole === "admin";
 
@@ -108,10 +101,8 @@ export default function TeamPage() {
   }
 
   return (
-    <AppShell>
-      <Topbar><Breadcrumbs items={[{ label: "Team" }]} /></Topbar>
-      <div className="app-shell__content">
-        <PageHeader title="Team" subtitle="Manage who has access to your organization." />
+    <div>
+        <p className="settings-lead">Manage who has access to your organization.</p>
 
         {error && <ErrorCallout message={error} />}
 
@@ -144,7 +135,7 @@ export default function TeamPage() {
             {lastInviteUrl && (
               <div style={{ marginTop: 16, padding: 12, background: "var(--color-accent-subtle)", borderRadius: "var(--radius-sm)" }}>
                 <p style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)", marginBottom: 6 }}>
-                  There&apos;s no email service connected yet -- copy this link and send it to them yourself:
+                  No email service is connected yet. Copy this link and send it to them yourself:
                 </p>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <code style={{ fontSize: "var(--text-xs)", background: "var(--color-surface)", padding: "6px 8px", borderRadius: 4, flex: 1, overflow: "auto", whiteSpace: "nowrap" }}>
@@ -167,7 +158,7 @@ export default function TeamPage() {
               <div>
                 <div style={{ fontSize: "var(--text-sm)", fontWeight: 500 }}>{m.display_name || m.email}</div>
                 <div style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)" }}>
-                  {m.email} · joined {formatRelativeTime(m.member_since)}
+                  {m.email}, joined {formatRelativeTime(m.member_since)}
                 </div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -215,7 +206,7 @@ export default function TeamPage() {
                 <div>
                   <div style={{ fontSize: "var(--text-sm)", fontWeight: 500 }}>{inv.email}</div>
                   <div style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)" }}>
-                    Invited as {inv.role} · sent {formatRelativeTime(inv.created_at)}
+                    Invited as {inv.role}, sent {formatRelativeTime(inv.created_at)}
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
@@ -228,7 +219,6 @@ export default function TeamPage() {
             ))}
           </Card>
         )}
-      </div>
-    </AppShell>
+    </div>
   );
 }

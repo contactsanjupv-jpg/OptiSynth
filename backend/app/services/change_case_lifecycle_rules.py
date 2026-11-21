@@ -1,15 +1,15 @@
 """
-Pure rules for managing a diagnostic's lifecycle: what each status means, when it can be edited,
+Pure rules for managing a program's lifecycle: what each status means, when it can be edited,
 archived, restored or permanently deleted. No database / web-framework imports (same pattern as
 change_case_rules.py), so every rule is directly unit-testable.
 
 THE STATUS MODEL (the only meanings the product gives these words)
-  draft      Setup in progress. Created, but nobody has started the diagnostic. The initial state.
-  active     In progress. A person explicitly started the diagnostic ("Start diagnostic").
+  draft      Setup in progress. Created, but nobody has started the program. The initial state.
+  active     In progress. A person explicitly started the program ("Start program").
              Nothing sets this automatically: creating a case, uploading evidence, adding
              candidates, ranking or opening a case never changes the status.
-  completed  Closed record. A person explicitly closed the diagnostic. It can never be reopened.
-  archived   NOT a status. A separate marker (archived_at): the diagnostic is hidden from the default
+  completed  Closed record. A person explicitly closed the program. It can never be reopened.
+  archived   NOT a status. A separate marker (archived_at): the program is hidden from the default
              list and read-only, with everything retained. Any status can be archived and restored.
 
 None of these means a material has passed physical testing: `active` is workflow progress, and a
@@ -21,8 +21,8 @@ change_case_rules.check_status_transition_allowed.
 from backend.app.schemas.errors import ValidationError
 
 STATUS_MEANINGS = {
-    "draft": "Setup in progress. The diagnostic has not been started.",
-    "active": "In progress. A team member started the diagnostic. This is workflow progress, not a qualification result.",
+    "draft": "Setup in progress. The program has not been started.",
+    "active": "In progress. A team member started the program. This is workflow progress, not a qualification result.",
     "completed": "Closed record. It cannot be reopened. Recorded physical outcomes are retained.",
 }
 ARCHIVED_MEANING = "Archived: hidden from the default list and read-only. Everything is retained and it can be restored."
@@ -31,7 +31,7 @@ NAME_MAX_LENGTH = 200
 SUBSTANCE_MAX_LENGTH = 500
 EDITABLE_FIELDS = {"name", "trigger_type", "restricted_substance", "target_value", "direction"}
 REQUIREMENT_FIELDS = {"target_value", "direction"}
-# What defines the evidence structure itself. Rejected with a pointer to creating a new diagnostic.
+# What defines the evidence structure itself. Rejected with a pointer to creating a new program.
 STRUCTURAL_SPEC_FIELDS = ("feature_columns", "target_metric", "units")
 
 
@@ -40,22 +40,22 @@ def is_archived(case: dict) -> bool:
 
 
 def check_not_archived(case: dict) -> None:
-    """Archived diagnostics are read-only. Every write path calls this first."""
+    """Archived programs are read-only. Every write path calls this first."""
     if is_archived(case):
         raise ValidationError(
-            "This diagnostic is archived and read-only. Restore it first if you need to change it.",
+            "This program is archived and read-only. Restore it first if you need to change it.",
             field="archived",
         )
 
 
 def check_can_archive(case: dict) -> None:
     if is_archived(case):
-        raise ValidationError("This diagnostic is already archived.", field="archived")
+        raise ValidationError("This program is already archived.", field="archived")
 
 
 def check_can_restore(case: dict) -> None:
     if not is_archived(case):
-        raise ValidationError("This diagnostic is not archived.", field="archived")
+        raise ValidationError("This program is not archived.", field="archived")
 
 
 def check_role_can_delete(role: str) -> None:
@@ -63,32 +63,32 @@ def check_role_can_delete(role: str) -> None:
     can archive instead."""
     if role not in ("owner", "admin"):
         raise PermissionError(
-            "Only an owner or admin can permanently delete a diagnostic. You can archive it instead."
+            "Only an owner or admin can permanently delete a program. You can archive it instead."
         )
 
 
 def delete_blocked_reason(case: dict, usage: dict):
-    """None if the diagnostic may be permanently deleted, else a plain-language reason.
+    """None if the program may be permanently deleted, else a plain-language reason.
 
-    Permanent deletion is for diagnostics nothing depends on: setup that was abandoned or started in
-    error. It is refused as soon as the diagnostic has produced anything a decision could rest on
+    Permanent deletion is for programs nothing depends on: setup that was abandoned or started in
+    error. It is refused as soon as the program has produced anything a decision could rest on
     (a ranking) or recorded physical evidence (an outcome), and always for a completed (closed)
     record -- those are archived instead, never destroyed."""
     if case.get("status") == "completed":
-        return "It is a completed (closed) record. Completed diagnostics are retained; archive it instead."
+        return "It is a completed (closed) record. Completed programs are retained; archive it instead."
     if usage.get("outcome_count", 0) > 0:
         return ("Physical validation outcomes have been recorded against its candidates. That evidence is "
-                "retained; archive the diagnostic instead.")
+                "retained; archive the program instead.")
     if usage.get("prediction_count", 0) > 0:
         return ("Candidates have been ranked, so results exist that a decision may have rested on. "
-                "Archive the diagnostic instead of deleting it.")
+                "Archive the program instead of deleting it.")
     return None
 
 
 def check_can_delete(case: dict, usage: dict) -> None:
     reason = delete_blocked_reason(case, usage)
     if reason:
-        raise ValidationError(f"This diagnostic can't be permanently deleted. {reason}", field="delete")
+        raise ValidationError(f"This program can't be permanently deleted. {reason}", field="delete")
 
 
 def requirement_locked_reason(case: dict, usage: dict):
@@ -96,18 +96,18 @@ def requirement_locked_reason(case: dict, usage: dict):
     Changing it after rankings exist would leave stored probabilities that were computed against a
     different requirement displayed as if they described the current one."""
     if is_archived(case):
-        return "The diagnostic is archived."
+        return "The program is archived."
     if case.get("status") == "completed":
-        return "The diagnostic is completed (a closed record)."
+        return "The program is completed (a closed record)."
     if usage.get("prediction_count", 0) > 0 or usage.get("outcome_count", 0) > 0:
         return ("Candidates have already been ranked against this requirement, so it can no longer be changed. "
-                "Create a new diagnostic for a different requirement.")
+                "Create a new program for a different requirement.")
     return None
 
 
 def clean_name(value) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise ValidationError("A diagnostic needs a name.", field="name")
+        raise ValidationError("A program needs a name.", field="name")
     value = value.strip()
     if len(value) > NAME_MAX_LENGTH:
         raise ValidationError(f"The name is too long (max {NAME_MAX_LENGTH} characters).", field="name")
@@ -140,7 +140,7 @@ def check_can_edit(case: dict, usage: dict, changes: dict) -> None:
     check_not_archived(case)
     if case.get("status") == "completed":
         raise ValidationError(
-            "A completed diagnostic is a closed record and can't be edited.", field="status",
+            "A completed program is a closed record and can't be edited.", field="status",
         )
     if REQUIREMENT_FIELDS & set(changes):
         reason = requirement_locked_reason(case, usage)

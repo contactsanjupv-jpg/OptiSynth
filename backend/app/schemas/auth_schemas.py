@@ -62,3 +62,11 @@ class MeResponse(BaseModel):
     user: UserPublic
     organization_id: int
     role: str
+
+class ProfileUpdateRequest(BaseModel):
+    display_name: str | None = Field(default=None, max_length=200)
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=_MIN_PASSWORD_LENGTH, max_length=200)

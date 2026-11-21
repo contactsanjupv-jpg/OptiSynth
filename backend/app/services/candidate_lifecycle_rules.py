@@ -5,7 +5,7 @@ describes it. No database / web-framework imports (same pattern as change_case_r
 change_case_lifecycle_rules.py), so every rule is directly unit-testable.
 
 THE MODEL
-  * A candidate belongs to ONE diagnostic and is identified by its id, never by its name.
+  * A candidate belongs to ONE program and is identified by its id, never by its name.
   * Editing the candidate's feature values (or the units they were entered in) bumps
     `inputs_version`. Every prediction stores the `inputs_version` it was computed for. A prediction
     is "for the current inputs" only while the two are equal. After an edit the old prediction is
@@ -44,12 +44,12 @@ def is_archived(candidate: dict) -> bool:
 
 
 def check_case_open(case: dict) -> None:
-    """A completed diagnostic is a closed record: its candidates can't be changed. (An archived one is
+    """A completed program is a closed record: its candidates can't be changed. (An archived one is
     refused earlier, by the route, with its own message.)"""
     if case.get("status") not in ("draft", "active"):
         raise ValidationError(
-            f"Can't change candidates of a diagnostic with status '{case.get('status')}': "
-            "a completed diagnostic is a closed record.",
+            f"Can't change candidates of a program with status '{case.get('status')}': "
+            "a completed program is a closed record.",
             field="status",
         )
 
@@ -72,7 +72,7 @@ def clean_name(value) -> str:
 
 
 def check_features_known(feature_columns, features: dict, candidate_name: str = None) -> None:
-    """Every key must be one of the diagnostic's modelled input features. A value for anything else
+    """Every key must be one of the program's modelled input features. A value for anything else
     would be stored and shown beside the candidate although the model never reads it, so it is
     refused instead of silently kept (names are case-sensitive: they must match the spec exactly)."""
     if not feature_columns:
@@ -81,7 +81,7 @@ def check_features_known(feature_columns, features: dict, candidate_name: str = 
     if unknown:
         who = f"Candidate '{candidate_name}'" if candidate_name else "This candidate"
         raise ValidationError(
-            f"{who} has value(s) for field(s) this diagnostic does not model: {', '.join(unknown)}. "
+            f"{who} has value(s) for field(s) this program does not model: {', '.join(unknown)}. "
             f"Only these input features are used: {', '.join(feature_columns)}.",
             field="features",
         )

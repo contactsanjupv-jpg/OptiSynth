@@ -105,7 +105,7 @@ class TestFrontendMatchesBackend(unittest.TestCase):
         self.assertIn("\\u22641%", ts)
 
     def test_the_page_uses_the_formatter_and_carries_the_same_note(self):
-        page = (FRONTEND / "app/change-cases/[id]/page.tsx").read_text(encoding="utf-8")
+        page = (FRONTEND / "app/programs/[id]/page.tsx").read_text(encoding="utf-8")
         self.assertIn("formatModelProbability(c.latest_prediction.predicted_probability)", page)
         self.assertNotIn("Math.round(c.latest_prediction.predicted_probability", page)
         self.assertIn(rules.PROBABILITY_DISPLAY_NOTE, page)

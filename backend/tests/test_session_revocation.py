@@ -23,7 +23,7 @@ from backend.tests.test_migration_portability import POSTGRES_URL, _config, _Use
 
 PASSWORD = "correct-horse-battery-staple"
 BEFORE_SESSIONS = "e5b8c3a91f47"
-SESSIONS_REVISION = "f6c9d4e2a1b3"
+SESSIONS_REVISION = "f6c9d4e2a1b3"  # the revision that added user_sessions; later revisions sit on top of it
 
 
 class TestSessionRevocation(IsolatedApiTestCase):
@@ -327,7 +327,7 @@ class _MigrationScenarios:
                 self.assertNotIn("user_sessions", inspect(engine).get_table_names())
                 org, user = self._seed_user(engine)
 
-                command.upgrade(_config(), "head")
+                command.upgrade(_config(), SESSIONS_REVISION)
                 insp = inspect(engine)
                 self.assertIn("user_sessions", insp.get_table_names())
                 self.assertEqual({c["name"] for c in insp.get_columns("user_sessions")},
@@ -373,9 +373,9 @@ class _MigrationScenarios:
         finally:
             engine.dispose()
 
-    def test_a_server_stamped_at_head_by_alembic_has_one_head_revision(self):
+    def test_a_server_stamped_at_this_revision_reports_it(self):
         with _UseDatabase(self.url):
-            command.upgrade(_config(), "head")
+            command.upgrade(_config(), SESSIONS_REVISION)
             engine = self.new_engine()
             try:
                 with engine.connect() as conn:

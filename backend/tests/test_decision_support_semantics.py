@@ -191,7 +191,7 @@ class TestStatusThroughTheApplication(IsolatedApiTestCase):
 
 
 class TestFrontendUsesTheCurrentStatusNames(unittest.TestCase):
-    FILES = ("lib/api/change-cases.ts", "app/change-cases/[id]/page.tsx")
+    FILES = ("lib/api/change-cases.ts", "app/programs/[id]/page.tsx")
 
     def test_no_frontend_source_still_uses_the_retired_names(self):
         if not FRONTEND.is_dir():

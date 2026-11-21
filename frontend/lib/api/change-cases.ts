@@ -4,7 +4,7 @@ export type TriggerType = "regulatory_restriction" | "supplier_loss" | "componen
 /**
  * What each status means (the only meanings the product gives them -- see
  * backend change_case_lifecycle_rules.py):
- *   draft      setup in progress; nobody has started the diagnostic.
+ *   draft      setup in progress; nobody has started the program.
  *   active     in progress; a team member explicitly started it. Workflow progress, NOT a
  *              qualification result.
  *   completed  closed record; cannot be reopened.
@@ -28,11 +28,13 @@ export interface ChangeCase {
   trigger_type: TriggerType;
   restricted_substance: string | null;
   status: ChangeCaseStatus;
+  /** Workflow stage, see lib/api/portfolio.ts. */
+  stage?: string;
   created_at: string;
   updated_at: string;
   /** Returned by the list and by GET /api/change-cases/{id} as stored JSON text. */
   qualification_spec_json?: string;
-  /** Only on the response to creating a diagnostic: what each custom (unrecognised but explicit) unit label means --
+  /** Only on the response to creating a program: what each custom (unrecognised but explicit) unit label means --
    *  exact-spelling match only, not dimensionally validated, never converted. */
   unit_notes?: string[];
   /** Set when archived (hidden from the default list, read-only). */
@@ -40,12 +42,12 @@ export interface ChangeCase {
   archived?: boolean;
   /** One-sentence meaning of the current state, from the server. */
   status_meaning?: string;
-  /** What depends on the diagnostic. */
+  /** What depends on the program. */
   dataset_count?: number;
   candidate_count?: number;
   prediction_count?: number;
   outcome_count?: number;
-  /** Permanent deletion is only offered while nothing depends on the diagnostic. */
+  /** Permanent deletion is only offered while nothing depends on the program. */
   deletable?: boolean;
   delete_blocked_reason?: string | null;
   /** The requirement (threshold / direction) is locked once candidates have been ranked. */
@@ -109,7 +111,7 @@ export interface DeleteChangeCaseResult {
   files_not_removed: number;
 }
 
-/** Permanent. Owners and admins only, and only while nothing depends on the diagnostic. */
+/** Permanent. Owners and admins only, and only while nothing depends on the program. */
 export function deleteChangeCase(changeCaseId: number) {
   return apiRequest<DeleteChangeCaseResult>(`/api/change-cases/${changeCaseId}`, { method: "DELETE" });
 }
@@ -378,7 +380,7 @@ export interface Candidate {
   ranking_outdated?: boolean | null;
   /** Ready-to-show sentence when prediction_inputs_stale or ranking_outdated applies. */
   ranking_notice?: string | null;
-  /** Stored values for fields the diagnostic does not model (older rows). Never used by the model. */
+  /** Stored values for fields the program does not model (older rows). Never used by the model. */
   ignored_properties?: Record<string, number> | null;
   /** Removed from the analysis: hidden by default, excluded from ranking, retained with its history. */
   archived?: boolean;
@@ -423,11 +425,11 @@ export function addCandidate(
 export interface CandidateImportOptions {
   /** Column holding the candidate names (default on the server: "candidate_name"). */
   name_column?: string;
-  /** {diagnostic field: column in the file}. Fields left out fall back to an exact header match only. */
+  /** {program field: column in the file}. Fields left out fall back to an exact header match only. */
   column_mapping?: Record<string, string>;
   /** Explicit unit of the file's values per field; converted only by an exact factor, never guessed. */
   units?: Record<string, string>;
-  /** The user confirms every value not given an explicit unit is already in the diagnostic's own unit. */
+  /** The user confirms every value not given an explicit unit is already in the program's own unit. */
   confirm_canonical_units?: boolean;
   /** Only honoured by the import endpoint. */
   confirm?: boolean;

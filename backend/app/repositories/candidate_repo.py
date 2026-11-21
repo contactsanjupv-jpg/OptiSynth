@@ -39,7 +39,7 @@ def create_candidates_batch(organization_id: int, change_case_id: int, entries: 
     failed guard, a database error on any row) rolls the whole batch back.
 
     `entries` is [(name, properties_dict, input_json_or_None)]. `guard(case_row, existing_names)` is called
-    INSIDE the transaction, after the diagnostic's row has been locked, with the diagnostic as it is right now
+    INSIDE the transaction, after the program's row has been locked, with the program as it is right now
     and the names of every candidate it holds (removed ones included): it re-checks what the caller validated
     earlier (still open, names still free), so two overlapping imports -- or an import and a manual add --
     cannot both succeed with the same name. The no-op UPDATE below is what serialises them: it takes the write
@@ -75,7 +75,7 @@ def create_candidates_batch(organization_id: int, change_case_id: int, entries: 
 
 
 def list_candidates_for_change_case(organization_id: int, change_case_id: int, include_archived: bool = False):
-    """The diagnostic's candidates in id order. Candidates removed from the analysis (archived) are
+    """The program's candidates in id order. Candidates removed from the analysis (archived) are
     left out unless asked for: ranking, sufficiency and the default list never see them."""
     archived_filter = "" if include_archived else " AND archived_at IS NULL"
     with db_connection() as conn:
@@ -113,7 +113,7 @@ def get_candidate(organization_id: int, candidate_id: int):
 
 def get_candidate_usage_map(organization_id: int, change_case_id: int) -> dict:
     """{candidate_id: {"prediction_count", "outcome_count", "experiment_count"}} for EVERY candidate of
-    the diagnostic (archived ones included), in two grouped queries."""
+    the program (archived ones included), in two grouped queries."""
     usage = {}
     with db_connection() as conn:
         ids = [r[0] for r in conn.execute(

@@ -1,5 +1,5 @@
 """
-Pydantic v2 schemas for the forced-substitution qualification diagnostic
+Pydantic v2 schemas for the forced-substitution qualification program
 (change_cases domain). Scope is deliberately narrow, per the approved
 Phase 2 plan: customer-supplied candidates only (no product-level cap on how
 many the customer nominates), no candidate discovery/generation, no open-ended
@@ -18,7 +18,7 @@ ChangeCaseStatus = Literal["draft", "active", "completed"]
 
 
 # ---------------------------------------------------------------------------
-# Qualification specification (the requirement a diagnostic is defined by)
+# Qualification specification (the requirement a program is defined by)
 # ---------------------------------------------------------------------------
 
 MAX_SPEC_FEATURES = 50
@@ -41,7 +41,7 @@ def _clean_name(value, what: str) -> str:
 
 
 class QualificationSpec(BaseModel):
-    """The requirement a diagnostic is built around. EVERY key here is read by the engine or the
+    """The requirement a program is built around. EVERY key here is read by the engine or the
     evidence gate; unknown keys are rejected (extra='forbid') because an ignored key would let a
     user believe the model honours a setting it never sees."""
     model_config = ConfigDict(extra="forbid")
@@ -53,10 +53,10 @@ class QualificationSpec(BaseModel):
         description="'maximize': the property must be at or above target_value; 'minimize': at or below.")
     units: dict[str, str] | None = Field(
         default=None,
-        description="Canonical unit for EVERY modelled input feature and for the target (required when a diagnostic "
+        description="Canonical unit for EVERY modelled input feature and for the target (required when a program "
         "is created; cannot be edited afterwards). Use a real unit (degC, h, mm ...), or explicitly 'dimensionless', "
         "'fraction' (0-1) or '%' (0-100) -- three different units, never converted into each other. Any other "
-        "explicit label is a custom unit matched by exact symbol only (letter case matters, spacing is ignored). Older diagnostics may lack units; they "
+        "explicit label is a custom unit matched by exact symbol only (letter case matters, spacing is ignored). Older programs may lack units; they "
         "cannot be ranked.")
 
     @field_validator("feature_columns", mode="after")
@@ -167,7 +167,7 @@ class UpdateStatusRequest(BaseModel):
 
 
 class UpdateChangeCaseRequest(BaseModel):
-    """Partial edit of a diagnostic: only the fields that are sent are changed (send
+    """Partial edit of a program: only the fields that are sent are changed (send
     restricted_substance as null or "" to clear it). Fields that define the evidence structure
     (feature columns, target metric, units) are deliberately not editable; unknown fields are
     rejected, not ignored."""
@@ -229,7 +229,7 @@ class AddCandidateRequest(BaseModel):
 class UpdateCandidateRequest(BaseModel):
     """Partial edit of a candidate: only the fields that are sent are changed. `features` replaces the
     candidate's WHOLE set of input values (every modelled feature must be present, with its unit
-    wherever the diagnostic declares one); `units` is only accepted together with `features`.
+    wherever the program declares one); `units` is only accepted together with `features`.
     Unknown fields are rejected, not ignored."""
     model_config = ConfigDict(extra="forbid")
 
@@ -265,7 +265,7 @@ class ChangeCaseResponse(BaseModel):
     status: ChangeCaseStatus
     created_at: str
     updated_at: str
-    # Set when the diagnostic is archived (hidden from the default list and read-only).
+    # Set when the program is archived (hidden from the default list and read-only).
     archived_at: str | None = None
 
     model_config = {"from_attributes": True}
@@ -313,7 +313,7 @@ class CandidateResponse(BaseModel):
     ranking_outdated: bool | None = None
     # Ready-to-show sentence when either of the two flags above applies.
     ranking_notice: str | None = None
-    # Stored values for fields this diagnostic does not model (legacy rows); never used by the model.
+    # Stored values for fields this program does not model (legacy rows); never used by the model.
     ignored_properties: dict | None = None
     # How well the historical data supports ranking this candidate (set whenever a prediction for its current
     # input values exists): ranked | ranked_with_caution | not_ranked_insufficient_evidence, with a ready-to-show

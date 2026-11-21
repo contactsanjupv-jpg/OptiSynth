@@ -2,19 +2,17 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Users, Settings, Atom, LogOut, ShieldCheck } from "lucide-react";
+import { Settings, Atom, LogOut, ClipboardList, LayoutGrid } from "lucide-react";
 import { getSessionCache, clearSessionCache } from "@/lib/auth/session";
 import { logout } from "@/lib/api/auth";
 import { useEffect, useState } from "react";
 import "@/styles/components/sidebar.css";
 
-// Customer-facing navigation is the qualification diagnostic only. The earlier
-// optimization product's pages (Dashboard, Projects, Datasets, Experiments,
-// Reports, Billing) are deliberately not linked and are redirected in
-// next.config.js.
+// Customer navigation. The earlier optimization product's pages stay in the code base but are not
+// linked and are redirected in next.config.js.
 const NAV_ITEMS = [
-  { href: "/change-cases", label: "Diagnostics", icon: ShieldCheck },
-  { href: "/team", label: "Team", icon: Users },
+  { href: "/overview", label: "Overview", icon: LayoutGrid },
+  { href: "/programs", label: "Programs", icon: ClipboardList },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -67,7 +65,7 @@ export function Sidebar() {
             <div className="sidebar__user-info">
               <span className="sidebar__user-name">{email}</span>
             </div>
-            <button className="sidebar__logout-btn" onClick={handleLogout} aria-label="Log out" type="button">
+            <button className="sidebar__logout-btn" onClick={handleLogout} aria-label="Sign out" type="button">
               <LogOut size={15} />
             </button>
           </div>

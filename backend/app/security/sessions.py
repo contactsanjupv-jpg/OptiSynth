@@ -40,14 +40,14 @@ def create_session_token(user_id: int, organization_id: int, session_id: str | N
     return _serializer().dumps(payload)
 
 
-def start_session(user_id: int, organization_id: int) -> str:
+def start_session(user_id: int, organization_id: int, user_agent: str = None, ip_address: str = None) -> str:
     """Stores a new server-side session (repositories/sessions_repo.py) and returns the signed token that carries its
     random id. The API accepts the token only while that stored session is unrevoked and unexpired (see
     api/dependencies.py), which is what lets logout really end it. A token without a session id (issued before server-side
     sessions existed) is refused there."""
     session_id = secrets.token_urlsafe(24)
     expires_at = (datetime.now(timezone.utc) + timedelta(hours=settings.SESSION_LIFETIME_HOURS)).isoformat()
-    sessions_repo.create_session(session_id, user_id, organization_id, expires_at)
+    sessions_repo.create_session(session_id, user_id, organization_id, expires_at, user_agent, ip_address)
     return create_session_token(user_id, organization_id, session_id)
 
 

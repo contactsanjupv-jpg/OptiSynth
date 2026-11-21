@@ -7,7 +7,7 @@
  */
 :root {
   /* ---- Neutrals (surfaces + text) ---- */
-  --color-bg: #fafafa;
+  --color-bg: #ffffff;
   --color-surface: #ffffff;
   --color-surface-raised: #ffffff;
   --color-border: #e5e7eb;
@@ -18,11 +18,11 @@
   --color-text-tertiary: #9ca3af;
   --color-text-inverse: #ffffff;
 
-  /* ---- Restrained blue accent (never purple/gradient) ---- */
-  --color-accent: #2563eb;
-  --color-accent-hover: #1d4ed8;
-  --color-accent-subtle: #eff6ff;
-  --color-accent-border: #bfdbfe;
+  /* ---- Monochrome accent: near black on white ---- */
+  --color-accent: #111111;
+  --color-accent-hover: #000000;
+  --color-accent-subtle: #f4f4f5;
+  --color-accent-border: #d4d4d8;
 
   /* ---- Status colors ---- */
   --color-success: #16a34a;
@@ -41,7 +41,7 @@
   --color-neutral-border: #e5e7eb;
 
   /* ---- Chart colors ---- */
-  --color-chart-primary: #2563eb;
+  --color-chart-primary: #111111;
   --color-chart-baseline: #9ca3af;
   --color-chart-target: #16a34a;
   --color-chart-grid: #f0f1f3;

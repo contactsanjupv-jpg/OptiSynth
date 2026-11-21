@@ -1139,6 +1139,7 @@ class TestProductionSecrets(unittest.TestCase):
 
 class TestDeploymentWarning(unittest.TestCase):
     def test_a_postgres_or_public_origin_outside_production_logs_a_warning(self):
+        logging.getLogger("backend.app.config.settings").disabled = False  # alembic's fileConfig() disables existing loggers
         for env in ({"DATABASE_URL": "postgresql+psycopg2://u:p@h/db"}, {"CORS_ALLOWED_ORIGIN": "https://app.example.com"}):
             with self.assertLogs("backend.app.config.settings", level="WARNING") as cm:
                 _settings(**env)

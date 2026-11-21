@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError as PydanticValidationError
 
-from backend.app.schemas.errors import TooManyAttempts, ValidationError
+from backend.app.schemas.errors import Forbidden, TooManyAttempts, ValidationError
 from backend.app.config.settings import settings
 
 logger = logging.getLogger("rdopt")
@@ -78,6 +78,10 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(LookupError)
     async def handle_not_found(request: Request, err: LookupError):
         return JSONResponse(status_code=404, content={"error": str(err) or "Not found."})
+
+    @app.exception_handler(Forbidden)
+    async def handle_forbidden_with_message(request: Request, err: Forbidden):
+        return JSONResponse(status_code=403, content={"error": err.message})
 
     @app.exception_handler(PermissionError)
     async def handle_forbidden(request: Request, err: PermissionError):

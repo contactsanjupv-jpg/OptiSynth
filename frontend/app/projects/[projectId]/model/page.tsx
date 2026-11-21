@@ -53,10 +53,10 @@ export default function ModelPage() {
       <Card padding="lg">
         <CardHeader><CardTitle>Model Metrics (random-row cross-validation; can be optimistic for new batches)</CardTitle></CardHeader>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
-          <StatCard label="R\u00b2 Score" value={formatNumber(metrics.r2_score, 2)} />
-          <StatCard label="Mean Absolute Error" value={formatNumber(metrics.mean_absolute_error, 2)} />
+          <StatCard label="R\u00b2 score" value={formatNumber(metrics.r2_score, 2)} />
+          <StatCard label="Mean absolute error" value={formatNumber(metrics.mean_absolute_error, 2)} />
           <StatCard label="Within tolerance band" value={formatPercent(metrics.prediction_accuracy_pct)} caption={`within \u00b1${formatNumber(metrics.accuracy_tolerance_band, 2)} (heuristic band, not an acceptance threshold)`} />
-          <StatCard label="Folds Used" value={String(metrics.n_folds_used ?? "—")} />
+          <StatCard label="Folds used" value={String(metrics.n_folds_used ?? "Not available")} />
         </div>
       </Card>
     </div>

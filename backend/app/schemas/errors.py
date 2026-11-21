@@ -24,3 +24,12 @@ class ValidationError(Exception):
         super().__init__(message)
         self.message = message
         self.field = field
+
+
+class Forbidden(PermissionError):
+    """A refusal whose message is safe to show a customer (a plain PermissionError may carry file paths, so the generic
+    handler never shows its text). Mapped to HTTP 403 with this message."""
+
+    def __init__(self, message: str = "You don't have access to this resource."):
+        super().__init__(message)
+        self.message = message

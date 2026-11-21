@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Dialog } from "@/components/ui/Dialog";
 import { ErrorCallout, Spinner } from "@/components/ui/Feedback";
 import { CandidateImport } from "@/components/change-cases/CandidateImport";
+import { StagePanel } from "@/components/change-cases/StagePanel";
 import { useRequireAuth } from "@/lib/auth/useRequireAuth";
 import {
   getChangeCase, addCandidate, listCandidates, listEvidence, getSufficiency, parseSpec,
@@ -132,7 +133,7 @@ export default function ChangeCaseDetailPage() {
     return ra !== rb ? ra - rb : a.id - b.id;
   });
   const activeCandidates = (candidates ?? []).filter((c) => !c.archived);
-  // An archived diagnostic is read-only and a completed one is a closed record: neither takes candidate changes.
+  // An archived program is read-only and a completed one is a closed record: neither takes candidate changes.
   const archivedCase = Boolean(changeCase?.archived_at);
   const completedCase = changeCase?.status === "completed";
   const canEditCandidates = changeCase !== null && !archivedCase && !completedCase;
@@ -153,7 +154,7 @@ export default function ChangeCaseDetailPage() {
     setDialogError(null);
     if (kind === "edit") {
       // Fill the form with what was ENTERED (value + unit) when there is a record of it; otherwise with the
-      // stored value, which is already in the diagnostic's own unit.
+      // stored value, which is already in the program's own unit.
       const values: Record<string, string> = {};
       const units: Record<string, string> = {};
       for (const col of spec?.feature_columns ?? []) {
@@ -236,7 +237,7 @@ export default function ChangeCaseDetailPage() {
     setAddingCandidate(true);
     try {
       if (!spec) {
-        setError("The diagnostic definition has not loaded yet. Reload the page and try again.");
+        setError("The program definition has not loaded yet. Reload the page and try again.");
         return;
       }
       const features: Record<string, number> = {};
@@ -294,7 +295,7 @@ export default function ChangeCaseDetailPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = filename ?? `qualification_diagnostic_${changeCaseId}.docx`;
+      a.download = filename ?? `qualification_program_${changeCaseId}.docx`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -306,11 +307,11 @@ export default function ChangeCaseDetailPage() {
 
   return (
     <AppShell>
-      <Topbar><Breadcrumbs items={[{ label: "Change Cases", href: "/change-cases" }, { label: changeCase?.name ?? "…" }]} /></Topbar>
+      <Topbar><Breadcrumbs items={[{ label: "Programs", href: "/programs" }, { label: changeCase?.name ?? "Loading" }]} /></Topbar>
       <div className="app-shell__content">
         <PageHeader
-          title={changeCase?.name ?? "Loading…"}
-          subtitle={changeCase ? `${changeCase.trigger_type}${changeCase.restricted_substance ? ` · ${changeCase.restricted_substance}` : ""}` : ""}
+          title={changeCase?.name ?? "Loading program"}
+          subtitle={changeCase ? `${changeCase.trigger_type}${changeCase.restricted_substance ? `, ${changeCase.restricted_substance}` : ""}` : ""}
         />
 
         {error && <ErrorCallout message={error} />}
@@ -320,11 +321,12 @@ export default function ChangeCaseDetailPage() {
           </div>
         )}
 
+        <StagePanel changeCaseId={changeCaseId} onChanged={load} />
+
         <Card padding="lg" style={{ marginBottom: 20 }}>
           <CardHeader><CardTitle>1. Customer evidence</CardTitle></CardHeader>
           <p style={{ fontSize: "var(--text-sm)", color: "var(--color-text-tertiary)", marginBottom: 10 }}>
-            Import the customer&apos;s historical qualification evidence (CSV, XLSX, Word or PDF tables). It is reviewed — table,
-            columns, units, test conditions, conflicts — and only evidence you accept reaches the model.
+            Import your historical evidence from CSV, XLSX, Word or PDF tables. You review the table, columns, units, test conditions and conflicts. Only evidence you accept reaches the model.
           </p>
           {spec && (
             <p style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)", marginBottom: 10 }}>
@@ -351,14 +353,14 @@ export default function ChangeCaseDetailPage() {
               </div>
               <div style={{ color: "var(--color-text-tertiary)" }}>
                 {ev.row_count} records
-                {ev.source?.tables.map((t) => ` · ${t.location} (header row ${t.header_row})`).join("")}
-                {ev.warning_count > 0 && ` · ${ev.warning_count} note(s) recorded`}
-                {ev.file_sha256 && ` · SHA-256 ${ev.file_sha256.slice(0, 12)}…`}
+                {ev.source?.tables.map((t) => `, ${t.location} (header row ${t.header_row})`).join("")}
+                {ev.warning_count > 0 && `, ${ev.warning_count} note(s) recorded`}
+                {ev.file_sha256 && `, SHA-256 ${ev.file_sha256.slice(0, 12)}…`}
               </div>
             </div>
           ))}
           <div style={{ marginTop: 12 }}>
-            <Link href={`/change-cases/${changeCaseId}/intake`}>
+            <Link href={`/programs/${changeCaseId}/intake`}>
               <Button variant="primary">Import and review evidence</Button>
             </Link>
           </div>
@@ -368,14 +370,14 @@ export default function ChangeCaseDetailPage() {
           <CardHeader><CardTitle>2. Candidate substitutes ({activeCandidates.length})</CardTitle></CardHeader>
           {archivedCase && (
             <div role="status" style={NOTICE_STYLE}>
-              <strong>This diagnostic is archived and read-only.</strong> Restore it from the{" "}
-              <Link href="/change-cases">Diagnostics list</Link> to add, edit or remove candidates or to run a ranking.
+              <strong>This program is archived and read-only.</strong> Restore it from the{" "}
+              <Link href="/programs">Programs list</Link> to add, edit or remove candidates or to run a ranking.
               The report can still be downloaded.
             </div>
           )}
           {completedCase && !archivedCase && (
             <div role="status" style={NOTICE_STYLE}>
-              <strong>This diagnostic is completed (a closed record).</strong> Candidates can no longer be added, edited,
+              <strong>This program is completed (a closed record).</strong> Candidates can no longer be added, edited,
               removed or restored.
             </div>
           )}
@@ -530,14 +532,14 @@ export default function ChangeCaseDetailPage() {
                 <div style={{ marginTop: 8, fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>
                   <div>
                     <strong>
-                      {staleInputs ? "Previous prediction (before the input values were edited) — " : ""}
+                      {staleInputs ? "Previous prediction, before the input values were edited: " : ""}
                       Predicted {spec?.target_metric ?? "value"}{targetUnit ? ` (${targetUnit})` : ""}:{" "}
                     </strong>
                     {c.latest_prediction.predicted_value != null
                       ? <>{formatPredictedValue(c.latest_prediction.predicted_value)}{targetUnit ? ` ${targetUnit}` : ""}{" "}
                           <span style={{ color: "var(--color-text-tertiary)" }}>(model estimate, not a measured result)</span></>
                       : <span style={{ color: "var(--color-text-tertiary)" }}>
-                          Not recorded — this ranking was saved before predicted values were stored. Re-run the ranking to get one.
+                          Not recorded. This ranking was saved before predicted values were stored. Run the ranking again to get one.
                         </span>}
                     {spec && (
                       <div style={{ color: "var(--color-text-tertiary)" }}>
@@ -603,7 +605,7 @@ export default function ChangeCaseDetailPage() {
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
                 <strong style={{ fontSize: "var(--text-sm)" }}>Evidence sufficiency</strong>
                 <Badge tone={sufficiency.can_rank ? "neutral" : "danger"}>
-                  {sufficiency.can_rank ? "Evidence can support an analysis" : "Analysis stopped — evidence insufficient"}
+                  {sufficiency.can_rank ? "Evidence can support an analysis" : "Analysis stopped, evidence is insufficient"}
                 </Badge>
               </div>
               {sufficiency.checks.filter((c) => c.status !== "pass").map((c) => (
@@ -629,13 +631,12 @@ export default function ChangeCaseDetailPage() {
         </Card>
 
         <Card padding="lg">
-          <CardHeader><CardTitle>3. Diagnostic report</CardTitle></CardHeader>
+          <CardHeader><CardTitle>3. Program report</CardTitle></CardHeader>
           <p style={{ fontSize: "var(--text-sm)", color: "var(--color-text-tertiary)", marginBottom: 10 }}>
-            An analysis deliverable -- ranked candidates, model-estimated probability and uncertainty,
-            decision support, and a recommended validation plan. This does not represent completed physical qualification.
+            Includes ranked candidates, model-estimated probability and uncertainty, decision support and a recommended validation plan. It does not represent completed physical qualification.
           </p>
           <Button variant="secondary" onClick={handleDownloadReport} loading={generatingReport}>
-            Download diagnostic report (.docx)
+            Download program report (.docx)
           </Button>
         </Card>
 

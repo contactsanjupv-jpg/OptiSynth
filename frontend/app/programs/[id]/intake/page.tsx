@@ -87,7 +87,7 @@ export default function EvidenceIntakePage() {
     if (checking || !changeCaseId) return;
     getChangeCase(changeCaseId)
       .then((c) => { setChangeCase(c); setSpec(parseSpec(c)); })
-      .catch(() => setError("Could not load this diagnostic."));
+      .catch(() => setError("Could not load this program."));
   }, [checking, changeCaseId]);
 
   const selectedTables: ExtractedTable[] = useMemo(
@@ -212,8 +212,8 @@ export default function EvidenceIntakePage() {
     <AppShell>
       <Topbar>
         <Breadcrumbs items={[
-          { label: "Diagnostics", href: "/change-cases" },
-          { label: changeCase?.name ?? "…", href: `/change-cases/${changeCaseId}` },
+          { label: "Programs", href: "/programs" },
+          { label: changeCase?.name ?? "…", href: `/programs/${changeCaseId}` },
           { label: "Evidence review" },
         ]} />
       </Topbar>
@@ -242,19 +242,19 @@ export default function EvidenceIntakePage() {
             </p>
             {accepted.review && <FindingList flags={accepted.review.flags.filter((f) => f.severity === "warning")} />}
             <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-              <Link href={`/change-cases/${changeCaseId}`}><Button variant="primary">Back to the diagnostic</Button></Link>
+              <Link href={`/programs/${changeCaseId}`}><Button variant="primary">Back to the program</Button></Link>
               <Button variant="ghost" onClick={resetAll}>Import another file</Button>
             </div>
           </Card>
         ) : (
           <>
             <Card padding="lg" style={{ marginBottom: 16 }}>
-              <CardHeader><CardTitle>1. Choose the customer&apos;s file</CardTitle></CardHeader>
+              <CardHeader><CardTitle>1. Choose your file</CardTitle></CardHeader>
               <input type="file" accept=".csv,.xlsx,.docx,.pdf" onChange={handleFile} disabled={extracting} />
               {extracting && <Spinner label="Reading file…" />}
               {extraction && (
                 <div style={{ ...smallText, marginTop: 8 }}>
-                  {extraction.file_name} · {extraction.file_kind.toUpperCase()} · SHA-256 {extraction.file_sha256.slice(0, 16)}…
+                  {extraction.file_name}, {extraction.file_kind.toUpperCase()}, SHA-256 {extraction.file_sha256.slice(0, 16)}…
                   {extraction.warnings.map((w, i) => <div key={i}>• {w}</div>)}
                 </div>
               )}
@@ -280,7 +280,7 @@ export default function EvidenceIntakePage() {
                         <span style={{ fontSize: "var(--text-sm)", fontWeight: 500 }}>{t.location}</span>{" "}
                         <span style={smallText}>
                           {t.n_rows} rows × {t.n_cols} columns
-                          {t.total_required !== undefined && ` · ${t.matched_required}/${t.total_required} required fields look matched`}
+                          {t.total_required !== undefined && `, ${t.matched_required}/${t.total_required} required fields look matched`}
                         </span>
                         {t.confidence === "text_layout" && <> <Badge tone="warning">inferred from text layout</Badge></>}
                         {t.caption && <div style={smallText}>Nearby text: {t.caption}</div>}
@@ -327,13 +327,13 @@ export default function EvidenceIntakePage() {
               <Card padding="lg" style={{ marginBottom: 16 }}>
                 <CardHeader><CardTitle>3. Map the customer&apos;s columns, units and conditions</CardTitle></CardHeader>
                 <p style={smallText}>
-                  For each field this diagnostic needs, choose the column in the customer&apos;s file that holds it (or leave it
-                  unmapped — the review will stop you). Suggestions are shown but are <strong>never applied until you pick them</strong>.
+                  For each field this program needs, choose the column in your file that holds it (or leave it
+                  unmapped, and the review will stop you). Suggestions are shown but <strong>never applied until you pick them</strong>.
                 </p>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "var(--text-xs)", marginTop: 8 }}>
                   <thead>
                     <tr style={{ textAlign: "left", color: "var(--color-text-secondary)" }}>
-                      <th style={{ padding: 4 }}>Diagnostic field</th><th style={{ padding: 4 }}>Column in the file</th>
+                      <th style={{ padding: 4 }}>Program field</th><th style={{ padding: 4 }}>Column in the file</th>
                       <th style={{ padding: 4 }}>Unit of the values in the file</th>
                     </tr>
                   </thead>
@@ -347,13 +347,13 @@ export default function EvidenceIntakePage() {
                         <tr key={r.name} style={{ borderTop: "1px solid var(--color-border)", verticalAlign: "top" }}>
                           <td style={{ padding: 6 }}>
                             <div style={{ fontWeight: 600 }}>{r.name}</div>
-                            <div style={smallText}>{r.role === "target" ? "requirement" : "input feature"} · case unit: {r.unit ?? "not tracked"}</div>
+                            <div style={smallText}>{r.role === "target" ? "requirement" : "input feature"}, case unit: {r.unit ?? "not tracked"}</div>
                           </td>
                           <td style={{ padding: 6 }}>
                             {headerCells.length > 0 ? (
                               <select style={inputStyle} value={mapping[r.name] ?? NOT_MAPPED}
                                 onChange={(e) => setMapping((m) => ({ ...m, [r.name]: e.target.value }))}>
-                                <option value={NOT_MAPPED}>{exact ? `${r.name} (exact match)` : "— not mapped —"}</option>
+                                <option value={NOT_MAPPED}>{exact ? `${r.name} (exact match)` : "Not mapped"}</option>
                                 {headerCells.filter(Boolean).map((h, i) => <option key={i} value={h}>{h}</option>)}
                               </select>
                             ) : (
@@ -395,7 +395,7 @@ export default function EvidenceIntakePage() {
 
                 {conditionCandidates.length > 0 && (
                   <div style={{ marginTop: 14 }}>
-                    <div style={{ fontSize: "var(--text-xs)", fontWeight: 600 }}>Other columns in the file — are any of them test conditions?</div>
+                    <div style={{ fontSize: "var(--text-xs)", fontWeight: 600 }}>Do any other columns in the file hold test conditions?</div>
                     <p style={smallText}>
                       Tick a column if its value changes how results compare (test temperature, method, humidity…). Rows measured
                       under different conditions are never merged.
@@ -411,7 +411,7 @@ export default function EvidenceIntakePage() {
 
                 {differing && observed && (
                   <div style={{ marginTop: 14 }}>
-                    <div style={{ fontSize: "var(--text-xs)", fontWeight: 600 }}>The file mixes test conditions — choose the ONE reference set to analyse</div>
+                    <div style={{ fontSize: "var(--text-xs)", fontWeight: 600 }}>The file mixes test conditions. Choose one reference set to analyze</div>
                     {Object.entries(observed).map(([col, values]) => (
                       <div key={col} style={{ marginTop: 6 }}>
                         <span style={{ fontSize: "var(--text-xs)" }}>{col}: </span>

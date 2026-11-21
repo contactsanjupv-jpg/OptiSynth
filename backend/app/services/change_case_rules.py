@@ -80,20 +80,20 @@ def check_outcome_not_already_recorded(existing_outcome_count: int) -> None:
 
 def check_entitled_for_diagnostic(plan: str, subscription_status: str) -> None:
     """Raises ValidationError if this organization's current plan/billing
-    status doesn't entitle them to run a new change-case diagnostic.
+    status doesn't entitle them to run a new change-case program.
     Deliberately simple for Phase 1 (no seat counts, no usage metering) --
     entitlement logic can grow here without ever touching billing_service.py
     or routes directly, per PROJECT_ARCHITECTURE.md's billing-boundary rule."""
     if subscription_status not in ("active",):
         raise ValidationError(
             "This organization's subscription isn't active -- billing "
-            "must be current to run a new diagnostic.",
+            "must be current to run a new program.",
             field="subscription_status",
         )
 
     if plan == "trial":
         raise ValidationError(
-            "Trial organizations can't run a full diagnostic yet -- "
+            "Trial organizations can't run a full program yet -- "
             "upgrade to a paid plan to continue.",
             field="plan",
         )
@@ -119,7 +119,7 @@ def check_can_add_candidate(change_case_status: str) -> None:
     Candidates can only be added while a change case is still open for
     input ('draft' or 'active') -- never after it's 'completed', which is
     a closed historical record. There is deliberately NO cap on how many
-    customer-nominated candidates a diagnostic can hold; the product still
+    customer-nominated candidates a program can hold; the product still
     scores only candidates the customer names, never a generated pool."""
     if change_case_status not in ("draft", "active"):
         raise ValidationError(
@@ -137,13 +137,13 @@ def normalize_candidate_name(name: str) -> str:
 
 def check_candidate_name_unique(name: str, existing_names: list) -> None:
     """Raises ValidationError if `name` matches an existing candidate name of
-    the same diagnostic after trimming whitespace and ignoring case."""
+    the same program after trimming whitespace and ignoring case."""
     wanted = normalize_candidate_name(name)
     if not wanted:
         raise ValidationError("A candidate needs a name.", field="name")
     if any(normalize_candidate_name(n) == wanted for n in existing_names):
         raise ValidationError(
-            f"A candidate named {str(name).strip()!r} already exists in this diagnostic "
+            f"A candidate named {str(name).strip()!r} already exists in this program "
             "(names are compared ignoring case and surrounding spaces). Use a different name so "
             "the two candidates cannot be confused in the ranking or the report.",
             field="name",
@@ -154,8 +154,8 @@ UNITS_GUIDANCE = (
     "Units are never guessed from column names or values: declare each one explicitly. Use the real unit "
     "(for example degC, h, mm), 'fraction' for a dimensionless ratio between 0 and 1, '%' for a percentage, or "
     "'dimensionless' for a pure number. 'fraction' and '%' are different units and are never converted into each "
-    "other automatically. A diagnostic's units cannot be edited after it is created: create a new diagnostic that "
-    "declares them and upload the evidence again. This diagnostic's stored data and any earlier results are left "
+    "other automatically. A program's units cannot be edited after it is created: create a new program that "
+    "declares them and upload the evidence again. This program's stored data and any earlier results are left "
     "unchanged."
 )
 
@@ -198,7 +198,7 @@ UNITS_GUIDANCE_AT_CREATION = (
     "(for example degC, h, mm), 'dimensionless' for a pure number, 'fraction' for a ratio between 0 and 1, or '%' "
     "for a percentage. These three are different units and are never converted into each other automatically. Any "
     "other explicit label is accepted as a custom unit that is matched by exact symbol only (letter case matters, spacing is ignored) (it is not checked "
-    "dimensionally and never converted). Units cannot be edited after the diagnostic is created, so declare them now."
+    "dimensionally and never converted). Units cannot be edited after the program is created, so declare them now."
 )
 
 
@@ -206,7 +206,7 @@ def units_problem_message(problems: list, at_creation: bool = False) -> str:
     listed = "; ".join(f"{p['field']} ({p['role']}): {p['problem']}" for p in problems)
     if at_creation:
         return (
-            "A diagnostic needs an explicit canonical unit for every modelled input feature and for the target. "
+            "A program needs an explicit canonical unit for every modelled input feature and for the target. "
             f"Not usable: {listed}. {UNITS_GUIDANCE_AT_CREATION}"
         )
     return (
@@ -216,8 +216,8 @@ def units_problem_message(problems: list, at_creation: bool = False) -> str:
 
 
 def check_units_declared_at_creation(spec: dict) -> None:
-    """Refuses a new diagnostic whose spec leaves any modelled feature or the target without an explicit, valid
-    canonical unit. Units cannot be edited afterwards, so a diagnostic created without them could never be ranked."""
+    """Refuses a new program whose spec leaves any modelled feature or the target without an explicit, valid
+    canonical unit. Units cannot be edited afterwards, so a program created without them could never be ranked."""
     problems = units_declaration_problems(spec)
     if problems:
         raise ValidationError(units_problem_message(problems, at_creation=True), field="units")
@@ -371,7 +371,7 @@ def check_can_generate_report(data_quality_status: str) -> None:
 
 
 def check_data_quality_allows_ranking(data_quality_status: str) -> None:
-    """A ranking is the paid diagnostic's core output, so it is refused
+    """A ranking is the paid program's core output, so it is refused
     on data that cannot support one: 'invalid' (e.g. a zero-variance
     feature) or 'insufficient' (too few DISTINCT rows once exact
     duplicates are removed -- duplicates must not inflate evidence)."""

@@ -71,8 +71,8 @@ _USAGE_COLUMNS = """
 
 
 def list_change_cases_with_usage(organization_id: int, include_archived: bool = False):
-    """Every diagnostic of the organization (newest first) with how much depends on it. Archived
-    diagnostics are left out unless asked for."""
+    """Every program of the organization (newest first) with how much depends on it. Archived
+    programs are left out unless asked for."""
     where = "c.organization_id = :org_id" + ("" if include_archived else " AND c.archived_at IS NULL")
     with db_connection() as conn:
         rows = conn.execute(
@@ -97,7 +97,7 @@ _EDITABLE_COLUMNS = ("name", "trigger_type", "restricted_substance", "qualificat
 
 
 def update_change_case_fields(organization_id: int, change_case_id: int, fields: dict) -> bool:
-    """Updates only whitelisted columns of an org-owned diagnostic. The column names are never taken
+    """Updates only whitelisted columns of an org-owned program. The column names are never taken
     from the caller: anything outside the whitelist is refused."""
     unknown = set(fields) - set(_EDITABLE_COLUMNS)
     if unknown or not fields:
@@ -124,10 +124,10 @@ def set_archived(organization_id: int, change_case_id: int, archived: bool) -> b
 
 
 def delete_change_case_tree(organization_id: int, change_case_id: int):
-    """Permanently deletes a diagnostic and everything under it, in ONE transaction, in explicit
+    """Permanently deletes a program and everything under it, in ONE transaction, in explicit
     dependency order (so it behaves the same whether or not the database enforces foreign keys, and
     never leaves orphans). Returns the stored file names of its datasets so the caller can remove the
-    files once the database change has committed -- or None if the diagnostic does not exist.
+    files once the database change has committed -- or None if the program does not exist.
     The caller must already have decided that deletion is permitted
     (change_case_lifecycle_rules.check_can_delete): this function does not re-check."""
     params = {"org_id": organization_id, "case_id": change_case_id}

@@ -1,0 +1,12 @@
+.stage-current { margin: 0 0 12px; font-size: var(--text-lg); font-weight: var(--font-weight-medium); color: var(--color-text-primary); }
+.stage-form { display: flex; flex-direction: column; gap: 8px; max-width: 420px; }
+.stage-label { font-size: var(--text-xs); color: var(--color-text-secondary); }
+.stage-field { font: inherit; font-size: var(--text-sm); padding: 8px 10px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm); background: var(--color-surface); color: var(--color-text-primary); }
+.stage-blocked { margin: 0; font-size: var(--text-sm); color: var(--color-text-secondary); border-left: 2px solid var(--color-text-primary); padding-left: 10px; }
+.stage-muted { margin: 0; font-size: var(--text-xs); color: var(--color-text-tertiary); }
+.stage-note { margin: 12px 0 0; font-size: var(--text-xs); color: var(--color-text-tertiary); }
+.stage-toggle { margin-top: 10px; background: none; border: none; padding: 0; font: inherit; font-size: var(--text-sm); color: var(--color-text-secondary); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.stage-toggle:hover { color: var(--color-text-primary); }
+.stage-history { list-style: none; margin: 10px 0 0; padding: 0; }
+.stage-history li { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; border-bottom: 1px solid var(--color-border); font-size: var(--text-sm); }
+.programs-filter { margin: 0 0 12px; font-size: var(--text-sm); color: var(--color-text-secondary); padding: 8px 12px; background: var(--color-neutral-subtle); border-radius: var(--radius-sm); }

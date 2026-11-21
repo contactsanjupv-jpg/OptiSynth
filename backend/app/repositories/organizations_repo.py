@@ -34,3 +34,13 @@ def find_organizations_by_exact_name(name: str) -> list:
             text("SELECT * FROM organizations WHERE name = :name ORDER BY id"), {"name": name}
         ).mappings().all()
         return [dict(r) for r in rows]
+
+
+def update_profile(organization_id: int, name: str, industry, website) -> None:
+    from backend.app.repositories._time import now_iso
+    with db_transaction() as conn:
+        conn.execute(
+            text("""UPDATE organizations SET name = :name, industry = :industry, website = :website, updated_at = :now
+                     WHERE id = :id"""),
+            {"name": name, "industry": industry, "website": website, "now": now_iso(), "id": organization_id},
+        )

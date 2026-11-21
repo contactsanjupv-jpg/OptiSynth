@@ -39,7 +39,7 @@ export default function BillingPage() {
               </div>
               {!billing.stripe_configured && (
                 <p style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)" }}>
-                  Payment processing isn&apos;t connected yet -- this reflects your organization&apos;s real trial
+                  Payment processing is not connected yet. This reflects your organization&apos;s real trial
                   status, but there&apos;s no live Stripe integration behind it. Contact us to set up a paid pilot.
                 </p>
               )}

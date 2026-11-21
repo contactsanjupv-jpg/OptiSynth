@@ -164,11 +164,11 @@ export function CandidateImport({ changeCaseId, spec, onImported }: Props) {
             <strong style={{ fontSize: "var(--text-xs)" }}>1. Map the columns</strong>
             <div style={{ display: "grid", gridTemplateColumns: "minmax(140px, 1fr) minmax(160px, 1.4fr) minmax(90px, 0.8fr) minmax(120px, 1fr)", gap: 6, marginTop: 6, alignItems: "center" }}>
               <span style={SMALL}>Field</span><span style={SMALL}>Column in your file</span>
-              <span style={SMALL}>Diagnostic unit</span><span style={SMALL}>Unit of your values (optional)</span>
+              <span style={SMALL}>Program unit</span><span style={SMALL}>Unit of your values (optional)</span>
 
               <span style={SMALL}>candidate name</span>
               <select aria-label="Candidate name column" value={nameColumn} style={FIELD} onChange={(e) => { setNameColumn(e.target.value); setConfirmUnits(false); }}>
-                <option value="">— choose —</option>
+                <option value="">Choose</option>
                 {headers.filter(Boolean).map((h) => <option key={h} value={h}>{h}</option>)}
               </select>
               <span /><span />
@@ -192,7 +192,7 @@ export function CandidateImport({ changeCaseId, spec, onImported }: Props) {
             <label style={{ ...SMALL, display: "flex", gap: 6, alignItems: "flex-start", marginTop: 6 }}>
               <input type="checkbox" checked={confirmUnits} onChange={(e) => setConfirmUnits(e.target.checked)} />
               <span>
-                I confirm that every value without a unit entered above is already in the diagnostic&apos;s unit
+                I confirm that every value without a unit entered above is already in the program&apos;s unit
                 ({features.map((f) => `${f}: ${preview.expected_units[f] ?? "no unit"}`).join("; ")}). Units are never guessed.
               </span>
             </label>
@@ -265,7 +265,7 @@ export function CandidateImport({ changeCaseId, spec, onImported }: Props) {
                 onChange={(e) => setConfirmedKey(e.target.checked ? currentKey : null)} />
               <span>
                 I have reviewed the mapping, the units and the rows above and want to import {preview.would_import} candidate
-                {preview.would_import === 1 ? "" : "s"} into this diagnostic. They will not be ranked automatically.
+                {preview.would_import === 1 ? "" : "s"} into this program. They will not be ranked automatically.
               </span>
             </label>
             <div style={{ marginTop: 8 }}>
@@ -288,10 +288,10 @@ function FeatureRow(props: {
     <>
       <span style={SMALL}>{props.field}</span>
       <select aria-label={`${props.field} column`} value={props.column} style={FIELD} onChange={(e) => props.onColumn(e.target.value)}>
-        <option value="">— choose —</option>
+        <option value="">Choose</option>
         {props.headers.filter(Boolean).map((h) => <option key={h} value={h}>{h}</option>)}
       </select>
-      <span style={SMALL}>{props.canonical ?? "—"}</span>
+      <span style={SMALL}>{props.canonical ?? "Not set"}</span>
       <input aria-label={`${props.field} unit of your values`} value={props.unit} placeholder={props.canonical ?? ""}
         style={FIELD} onChange={(e) => props.onUnit(e.target.value)} />
     </>

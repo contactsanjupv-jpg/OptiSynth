@@ -52,6 +52,8 @@ def _sign_up_via_invite(body: SignupRequest) -> dict:
     user_id = users_repo.create_user(body.email, password_hash, body.display_name)
     memberships_repo.create_membership(user_id, invitation["organization_id"], role=invitation["role"])
     invitations_repo.mark_invitation_accepted(invitation["id"])
+    from backend.app.services import notification_service
+    notification_service.notify_member_joined(invitation["organization_id"], user_id, body.display_name or body.email)
 
     return {
         "user": users_repo.get_user_public(user_id),
@@ -88,3 +90,20 @@ def log_in(body: LoginRequest) -> dict:
         "user": users_repo.get_user_public(user["id"]),
         "memberships": memberships,
     }
+
+def update_profile(user_id: int, display_name) -> dict:
+    cleaned = (display_name or "").strip()
+    if len(cleaned) > 120:
+        raise ValidationError("Keep the name under 120 characters.", field="display_name")
+    users_repo.update_display_name(user_id, cleaned or None)
+    return users_repo.get_user_public(user_id)
+
+
+def change_password(user_id: int, current_password: str, new_password: str) -> None:
+    """Checks the current password, stores the new one. Callers revoke the user's other sessions."""
+    stored = users_repo.get_password_hash(user_id)
+    if not stored or not verify_password(current_password, stored):
+        raise ValidationError("The current password is not correct.", field="current_password")
+    if verify_password(new_password, stored):
+        raise ValidationError("Choose a password you have not used on this account.", field="new_password")
+    users_repo.set_password_hash(user_id, hash_password(new_password))

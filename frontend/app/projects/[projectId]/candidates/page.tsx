@@ -40,7 +40,7 @@ export default function CandidatesPage() {
   }
 
   const columns: DataTableColumn<Recommendation>[] = [
-    { key: "rank", header: "Rank", render: (r) => r.rank ?? "—" },
+    { key: "rank", header: "Rank", render: (r) => r.rank ?? "Unranked" },
     { key: "predicted", header: "Predicted Value", render: (r) => formatNumber(r.predicted_value) },
     { key: "confidence", header: "Model-estimated probability", render: (r) => formatPercent(r.feasibility_probability * 100) },
     {

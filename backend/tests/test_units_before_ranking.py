@@ -71,7 +71,7 @@ class TestUnitsRule(unittest.TestCase):
         message = ctx.exception.message
         for needle in ("crosslinker_ratio (input feature)", "cure_temp_c (input feature)", "salt_spray_hours (target)",
                        "never guessed", "'fraction'", "'%'", "'dimensionless'", "never converted into each other",
-                       "create a new diagnostic"):
+                       "create a new program"):
             self.assertIn(needle, message)
 
 
@@ -110,7 +110,7 @@ class TestRankingRequiresUnitsApi(IsolatedApiTestCase):
         for field in ("crosslinker_ratio", "cure_temp_c", "salt_spray_hours"):
             self.assertIn(f"{field} (", message)
         self.assertIn("never guessed", message)
-        self.assertIn("create a new diagnostic", message)
+        self.assertIn("create a new program", message)
 
     def test_a_refused_ranking_persists_nothing_and_the_report_does_not_imply_it_ran(self):
         from backend.app.repositories import candidate_repo
@@ -196,7 +196,7 @@ class TestRankingRequiresUnitsApi(IsolatedApiTestCase):
         before = snapshot()
         r = client.post(f"/api/change-cases/{case_id}/rank")
         self.assertEqual(r.status_code, 400)
-        self.assertIn("create a new diagnostic", r.json()["error"])
+        self.assertIn("create a new program", r.json()["error"])
         self.assertEqual(snapshot(), before, "stored spec, evidence rows, predictions and candidates are untouched")
         self.assertNotIn('"units"', before[0], "no unit was invented for the legacy spec")
         # the earlier results stay readable

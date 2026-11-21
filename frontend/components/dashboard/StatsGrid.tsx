@@ -8,10 +8,10 @@ export function StatsGrid({ summary }: { summary: DashboardSummary }) {
 
   return (
     <div className="stats-grid">
-      <StatCard label="Active Projects" value={String(summary.total_projects)} caption={runningLabel} />
+      <StatCard label="Active projects" value={String(summary.total_projects)} caption={runningLabel} />
       <StatCard label="Experiments" value={summary.total_experiments.toLocaleString()} />
       <StatCard
-        label="Targets Achieved"
+        label="Targets achieved"
         value={String(summary.targets_achieved)}
         caption={`of ${summary.total_projects} projects`}
       />

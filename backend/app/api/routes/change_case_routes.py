@@ -1,5 +1,5 @@
 """
-Routes for the forced-substitution qualification diagnostic. Every
+Routes for the forced-substitution qualification program. Every
 handler: session-derived actor via get_current_actor (organization_id is
 NEVER taken from the request), thin (real logic lives in
 change_case_service.py / change_case_rules.py), audit-logged on writes.
@@ -35,9 +35,9 @@ router = APIRouter(prefix="/api/change-cases", tags=["change-cases"])
 
 
 def _writable_case(actor: AuthContext, change_case_id: int) -> dict:
-    """The diagnostic, for a WRITE: 404 if it is not this organization's (checked first, so an archived
-    diagnostic of another organization is indistinguishable from a missing one), then refused if it is
-    archived. Archived diagnostics are read-only."""
+    """The program, for a WRITE: 404 if it is not this organization's (checked first, so an archived
+    program of another organization is indistinguishable from a missing one), then refused if it is
+    archived. Archived programs are read-only."""
     case = change_case_service.get_change_case_or_404(actor.organization_id, change_case_id)
     change_case_lifecycle_rules.check_not_archived(case)
     return case
@@ -52,13 +52,13 @@ async def create_change_case(body: CreateChangeCaseRequest, actor: AuthContext =
         actor.organization_id, actor.user["id"], body.name, body.trigger_type,
         body.restricted_substance, spec,
     )
-    audit_service.log(actor.organization_id, actor.user["id"], "change_case.create", detail=f"name={body.name}")
+    audit_service.log(actor.organization_id, actor.user["id"], "change_case.create", detail=f"change_case_id={case['id']} name={body.name}")
     return case
 
 
 @router.get("")
 async def list_change_cases(include_archived: bool = Query(False), actor: AuthContext = Depends(get_current_actor)):
-    """Diagnostics with what depends on each and what may be done with it. Archived ones are only
+    """Programs with what depends on each and what may be done with it. Archived ones are only
     included when include_archived=true."""
     return change_case_lifecycle_service.list_cases(actor.organization_id, include_archived)
 
@@ -99,7 +99,7 @@ async def restore_change_case(change_case_id: int, actor: AuthContext = Depends(
 
 @router.delete("/{change_case_id}")
 async def delete_change_case(change_case_id: int, actor: AuthContext = Depends(get_current_actor)):
-    """Permanent deletion -- owners and admins only, and only for a diagnostic nothing depends on (no
+    """Permanent deletion -- owners and admins only, and only for a program nothing depends on (no
     rankings, no recorded outcomes, not completed). Otherwise refused with the reason; archive instead."""
     result = change_case_lifecycle_service.delete_case(actor.organization_id, actor.role, change_case_id)
     audit_service.log(actor.organization_id, actor.user["id"], "change_case.delete",
@@ -112,7 +112,7 @@ async def delete_change_case(change_case_id: int, actor: AuthContext = Depends(g
 async def update_status(change_case_id: int, body: UpdateStatusRequest,
                          actor: AuthContext = Depends(get_current_actor)):
     _writable_case(actor, change_case_id)
-    result = change_case_service.update_status(actor.organization_id, change_case_id, body.status)
+    result = change_case_service.update_status(actor.organization_id, change_case_id, body.status, actor.user["id"])
     audit_service.log(actor.organization_id, actor.user["id"], "change_case.status_update",
                        detail=f"change_case_id={change_case_id} new_status={body.status}")
     return result

@@ -63,6 +63,11 @@ class Settings:
         self.MAX_ARCHIVE_UNCOMPRESSED_BYTES = int(os.environ.get("MAX_ARCHIVE_UNCOMPRESSED_BYTES", str(100 * 1024 * 1024)))
         self.MAX_ARCHIVE_ENTRIES = int(os.environ.get("MAX_ARCHIVE_ENTRIES", "2000"))
 
+        # Who may create a new organization through the sign-up form. Off by default in production: customers join by
+        # invitation, and new organizations are created by an operator (scripts/create_organization.py).
+        default_signup = "false" if os.environ.get("ENV", "development") == "production" else "true"
+        self.ALLOW_PUBLIC_SIGNUP = os.environ.get("ALLOW_PUBLIC_SIGNUP", default_signup).lower() == "true"
+
         self.PORT = int(os.environ.get("PORT", "5050"))
         self.ENV = os.environ.get("ENV", "development")
 

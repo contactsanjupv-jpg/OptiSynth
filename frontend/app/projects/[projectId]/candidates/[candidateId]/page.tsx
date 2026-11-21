@@ -50,10 +50,10 @@ export default function CandidateDetailPage() {
               Candidate #{candidateId}
             </h1>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
-              <StatCard label="Predicted Value" value={formatNumber(candidate.predicted_value)} />
+              <StatCard label="Predicted value" value={formatNumber(candidate.predicted_value)} />
               <StatCard label="Uncertainty (std)" value={formatNumber(candidate.uncertainty_std)} />
               <StatCard label="Feasibility" value={formatPercent(candidate.feasibility_probability * 100)} />
-              <StatCard label="Acquisition Score" value={formatNumber(candidate.acquisition_score, 3)} />
+              <StatCard label="Acquisition score" value={formatNumber(candidate.acquisition_score, 3)} />
             </div>
             <Card padding="lg">
               <CardHeader><CardTitle>Recommended Variable Values</CardTitle></CardHeader>

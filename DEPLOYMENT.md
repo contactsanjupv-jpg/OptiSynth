@@ -57,6 +57,19 @@ What each protection does, and where it is known to work:
   saying so, rather than read. Do not lower `PARSE_MAX_OUTPUT_MB` below about 20 unless you also lower `MAX_UPLOAD_ROWS`.
 - Very low `PARSE_MEMORY_MB` values (below the 400 MB used in testing) were not tried and may stop the parser from starting.
 
+### Sign-up and first customers
+
+`ALLOW_PUBLIC_SIGNUP` defaults to `false` when `ENV=production` (and `true` otherwise). With it off, the sign-up form is hidden and
+`POST /api/auth/signup` refuses anyone without an invitation. To start a customer, run the operator script with the application's
+environment, after `alembic upgrade head`:
+
+```
+python3 scripts/create_organization.py --organization "Acme Materials" --email owner@acme.com --name "Ada Owner"
+```
+
+The owner then invites their team from Settings. Security notes: password changes and data export ask for the current password,
+a session list and revocation are in Settings, and notifications and audit history are stored in the database.
+
 ## 2. Running the API
 
 - Run it behind a TLS-terminating reverse proxy that also sets `Strict-Transport-Security` (the app does not).

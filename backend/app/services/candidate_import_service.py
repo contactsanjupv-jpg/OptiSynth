@@ -27,7 +27,7 @@ RANKING_REMINDER = (
 
 
 def _blocked_reason(case: dict):
-    """Why nothing can be imported into this diagnostic right now, or None."""
+    """Why nothing can be imported into this program right now, or None."""
     try:
         change_case_lifecycle_rules.check_not_archived(case)
         change_case_rules.check_can_add_candidate(case["status"])
@@ -138,7 +138,7 @@ def import_candidates(organization_id: int, change_case_id: int, filename: str, 
     entries = a["entries"]
 
     def guard(case_row: dict, existing_names: list) -> None:
-        # Re-checked INSIDE the write transaction against the diagnostic as it is at this instant.
+        # Re-checked INSIDE the write transaction against the program as it is at this instant.
         change_case_lifecycle_rules.check_not_archived(case_row)
         change_case_rules.check_can_add_candidate(case_row["status"])
         taken = list(existing_names)

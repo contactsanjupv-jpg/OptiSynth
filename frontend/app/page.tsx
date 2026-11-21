@@ -3,12 +3,12 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
-// The product's home is the qualification diagnostic list. (This route used to
+// The product home is the overview. (This route used to
 // render a duplicate of another page.)
 export default function HomePage() {
   const router = useRouter();
   useEffect(() => {
-    router.replace("/change-cases");
+    router.replace("/overview");
   }, [router]);
   return null;
 }

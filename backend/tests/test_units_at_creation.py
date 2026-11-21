@@ -54,7 +54,7 @@ class TestCreationRequiresUnits(IsolatedApiTestCase):
         for field in ("crosslinker_ratio (input feature)", "cure_temp_c (input feature)", "salt_spray_hours (target)"):
             self.assertIn(field + ": no unit declared", message)
         for needle in ("never guessed", "'dimensionless'", "'fraction'", "'%'", "never converted into each other",
-                       "custom unit", "exact symbol only (letter case matters, spacing is ignored)", "cannot be edited after the diagnostic is created"):
+                       "custom unit", "exact symbol only (letter case matters, spacing is ignored)", "cannot be edited after the program is created"):
             self.assertIn(needle, message)
 
     def test_every_way_of_leaving_units_out_is_refused(self):
@@ -216,7 +216,7 @@ class TestCreationRequiresUnits(IsolatedApiTestCase):
         r = client.post(f"/api/change-cases/{legacy}/rank")
         self.assertEqual(r.status_code, 400)
         message = r.json()["error"]
-        self.assertIn("create a new diagnostic", message)
+        self.assertIn("create a new program", message)
         self.assertIn("left unchanged", message)
         sufficiency = client.get(f"/api/change-cases/{legacy}/sufficiency").json()
         self.assertEqual(next(c for c in sufficiency["checks"] if c["code"] == "UNITS_DECLARED")["status"], "fail")

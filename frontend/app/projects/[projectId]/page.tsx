@@ -40,8 +40,8 @@ export default function ProjectOverviewPage() {
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
-        <StatCard label="Target" value={project.target_value !== null ? formatNumber(project.target_value) : "—"} />
-        <StatCard label="Historical Experiments" value={String(backtest.n_historical_rows)} />
+        <StatCard label="Target" value={project.target_value !== null ? formatNumber(project.target_value) : "Not set"} />
+        <StatCard label="Historical experiments" value={String(backtest.n_historical_rows)} />
         <StatCard
           label="Experiments to Target (engine)"
           value={backtest.engine_order_evals !== null ? String(backtest.engine_order_evals) : "not reached"}

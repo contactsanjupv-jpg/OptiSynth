@@ -1,8 +1,8 @@
 """
-Managing a diagnostic after it exists: viewing it with what depends on it, editing it, archiving /
+Managing a program after it exists: viewing it with what depends on it, editing it, archiving /
 restoring it, and permanently deleting it when -- and only when -- nothing depends on it.
 
-Every function is organization-scoped through the repository (a diagnostic of another organization is
+Every function is organization-scoped through the repository (a program of another organization is
 indistinguishable from a missing one: LookupError -> 404). The rules live in
 change_case_lifecycle_rules.py.
 """
@@ -24,7 +24,7 @@ def _usage(row: dict) -> dict:
 
 
 def describe(row: dict) -> dict:
-    """The diagnostic as the API returns it: the stored record plus what depends on it and what may
+    """The program as the API returns it: the stored record plus what depends on it and what may
     be done with it. Nothing here is persisted -- it is derived on every read, so it can never drift
     from the real data."""
     usage = _usage(row)
@@ -100,7 +100,7 @@ def restore_case(organization_id: int, change_case_id: int) -> dict:
 
 def delete_case(organization_id: int, actor_role: str, change_case_id: int) -> dict:
     """Permanent deletion. Refused (with the reason, and archive as the alternative) whenever anything
-    depends on the diagnostic. Returns a summary of what was removed."""
+    depends on the program. Returns a summary of what was removed."""
     rules.check_role_can_delete(actor_role)
     row = change_case_repo.get_change_case_with_usage(organization_id, change_case_id)
     if row is None:

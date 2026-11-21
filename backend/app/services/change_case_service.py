@@ -1,5 +1,5 @@
 """
-Orchestrates the forced-substitution qualification diagnostic workflow:
+Orchestrates the forced-substitution qualification program workflow:
 
 change case -> qualification dataset -> named candidates -> ranking
 
@@ -27,13 +27,13 @@ triggering a ranking run (rank_change_case below) -- not at change-case
 
 creation. A trial-plan organization can create a case and upload data,
 
-but the paid diagnostic itself (the ranking + recommended experiments)
+but the paid program itself (the ranking + recommended experiments)
 
 requires an active, non-trial subscription. This was an explicit open
 
 design decision from the approved Phase 2 plan, resolved here because
 
-the commercial entry product IS the diagnostic (ranking + report), not
+the commercial entry product IS the program (ranking + report), not
 
 case setup.
 
@@ -76,7 +76,7 @@ def create_change_case(organization_id: int, created_by_user_id: int, name: str,
     spec_problem = evidence_rules.validate_spec_extensions(qualification_spec)
     if spec_problem:
         raise ValidationError(spec_problem, field="qualification_spec")
-    # Units are mandatory for every modelled field and the target, and cannot be edited later: a diagnostic
+    # Units are mandatory for every modelled field and the target, and cannot be edited later: a program
     # created without them could never be ranked. Enforced here (not only in the form) so that direct API calls,
     # scripts and any other caller get the same refusal.
     change_case_rules.check_units_declared_at_creation(qualification_spec)
@@ -108,13 +108,17 @@ def get_change_case_or_404(organization_id: int, change_case_id: int) -> dict:
 
 
 
-def update_status(organization_id: int, change_case_id: int, new_status: str) -> dict:
+def update_status(organization_id: int, change_case_id: int, new_status: str, actor_user_id=None) -> dict:
 
     case = get_change_case_or_404(organization_id, change_case_id)
 
     change_case_rules.check_status_transition_allowed(case["status"], new_status)
 
     change_case_repo.update_status(organization_id, change_case_id, new_status)
+
+    if new_status == "completed":  # the stage follows the status: a completed program is closed
+        from backend.app.services import program_stage_service
+        program_stage_service.close_with_status(organization_id, actor_user_id, change_case_id)
 
     return change_case_repo.get_change_case(organization_id, change_case_id)
 
@@ -124,7 +128,7 @@ def validate_candidate_inputs(spec: dict, name: str, features: dict, units: dict
     by the CSV import alike, so an imported candidate is never accepted on weaker terms than a typed one.
     Raises ValidationError with the first problem. -> (properties_in_canonical_units, input_json_or_None).
 
-    No product-level cap on candidates, but names must be unique within the diagnostic (trimmed,
+    No product-level cap on candidates, but names must be unique within the program (trimmed,
     case-insensitive) so two candidates can never be confused in the ranking or the report. `existing_names`
     must include candidates removed from the analysis too: restoring one must never create a duplicate name."""
     change_case_rules.check_candidate_name_unique(name, existing_names)
@@ -132,7 +136,7 @@ def validate_candidate_inputs(spec: dict, name: str, features: dict, units: dict
     # feature_columns defined -- otherwise a candidate missing a required feature would silently be stored and
     # only fail later, opaquely, when ranking tries to read the missing feature.
     change_case_rules.check_candidate_features_complete(spec.get("feature_columns"), features, name)
-    # Level 1D: a value for a field the diagnostic does not model is refused, not silently stored
+    # Level 1D: a value for a field the program does not model is refused, not silently stored
     # (it would be shown beside the candidate although the model never reads it).
     cand_rules.check_features_known(spec.get("feature_columns"), features, name)
     change_case_rules.check_candidate_features_finite(features, name)
@@ -231,7 +235,7 @@ def _dataset_ref(dataset):
 
 
 def list_candidates_with_predictions(organization_id: int, change_case_id: int, include_archived: bool = False) -> list:
-    """The diagnostic's candidates, each with its newest prediction and everything needed to read that
+    """The program's candidates, each with its newest prediction and everything needed to read that
     prediction honestly: what dataset and which input values it was computed for, whether the ranking
     still describes the current candidates, and what may be done with the candidate.
     Candidates removed from the analysis (archived) are included only when asked for."""
@@ -436,7 +440,7 @@ def _compute_evidence_metrics(spec: dict, experiments: list) -> tuple:
 
 
 def rank_change_case(organization_id: int, change_case_id: int) -> list:
-    """The paid diagnostic action: scores every named candidate against
+    """The paid program action: scores every named candidate against
     the change case's uploaded historical qualification data, writes a
     fresh prediction + a minimum recommended experiment for each, and
     returns the ranked result. Requires an active, non-trial
@@ -692,13 +696,13 @@ def _outdated_ranking_message(case: dict, edited_names: list) -> str:
     if edited_names:
         parts.append("Input values were changed after the ranking ran for: " + ", ".join(edited_names) + ".")
     if case.get("archived_at"):
-        parts.append("This diagnostic is archived and can't be re-ranked: restore it first.")
+        parts.append("This program is archived and can't be re-ranked: restore it first.")
     parts.append(cand_rules.ORDER_OUTDATED_NOTICE)
     return " ".join(parts)
 
 
 def generate_report(organization_id: int, change_case_id: int, organization_name: str) -> str:
-    """Builds the qualification diagnostic .docx from the change case's
+    """Builds the qualification program .docx from the change case's
     latest candidates/predictions -- the commercial deliverable. Uses
     whatever ranking results currently exist (does not re-run ranking);
     call rank_change_case first if a fresh ranking is wanted."""

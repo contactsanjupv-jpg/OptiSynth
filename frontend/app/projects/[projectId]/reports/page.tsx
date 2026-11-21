@@ -64,7 +64,7 @@ export default function ProjectReportsPage() {
                 <div>
                   <div style={{ fontSize: "var(--text-sm)", fontWeight: 500 }}>Optimization Summary Report</div>
                   <div style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)" }}>
-                    Generated {formatRelativeTime(r.created_at)} · {r.n_historical_rows} experiments
+                    Generated {formatRelativeTime(r.created_at)}, {r.n_historical_rows} experiments
                   </div>
                 </div>
               </div>

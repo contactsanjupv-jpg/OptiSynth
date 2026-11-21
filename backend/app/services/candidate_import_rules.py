@@ -3,7 +3,7 @@ Candidate CSV import -- pure rules (no fastapi / sqlalchemy imports), in the sam
 `*_rules.py` modules.
 
 What lives here: reading the CSV bytes with the stdlib `csv` module, mapping CSV columns to the
-diagnostic's fields, reading numbers strictly, and resolving the units the user declared. What does NOT
+program's fields, reading numbers strictly, and resolving the units the user declared. What does NOT
 live here: the checks a candidate itself must pass (complete, known fields, finite, units convertible,
 unique name). Those are the existing candidate rules, applied to every imported row by
 `change_case_service.validate_candidate_inputs` -- the SAME function manual "Add candidate" uses -- so an
@@ -125,7 +125,7 @@ def resolve_mapping(headers: list, feature_columns: list, options: dict) -> tupl
         raise ValidationError("column_mapping must be an object of {field: column}.")
     for f in given:
         if f not in feature_columns:
-            problems.append(error(f"column_mapping names {f!r}, which is not an input field of this diagnostic "
+            problems.append(error(f"column_mapping names {f!r}, which is not an input field of this program "
                                   f"(fields: {', '.join(feature_columns)}).", None, f))
     suggested = suggest_mapping(headers, feature_columns)
     mapping = {}
@@ -174,9 +174,9 @@ def parse_number(raw: str, field: str) -> tuple:
 # Units
 # ---------------------------------------------------------------------------
 def resolve_units(spec: dict, options: dict) -> tuple:
-    """-> ({feature: unit}, problems). Units are never guessed. For every field whose diagnostic unit is
+    """-> ({feature: unit}, problems). Units are never guessed. For every field whose program unit is
     declared, the user must either name the unit of the file's values explicitly (options["units"], converted
-    later only by an exact factor) or confirm the whole file is already in the diagnostic's units
+    later only by an exact factor) or confirm the whole file is already in the program's units
     (options["confirm_canonical_units"] is True)."""
     columns = list(spec.get("feature_columns") or [])
     canonical = spec.get("units") or {}
@@ -189,7 +189,7 @@ def resolve_units(spec: dict, options: dict) -> tuple:
     units, problems = {}, []
     for f in declared:
         if f not in columns:
-            problems.append(error(f"A unit was given for {f!r}, which is not an input field of this diagnostic.", None, f))
+            problems.append(error(f"A unit was given for {f!r}, which is not an input field of this program.", None, f))
     for f in columns:
         raw = declared.get(f)
         explicit = raw.strip() if isinstance(raw, str) and raw.strip() else None
@@ -199,7 +199,7 @@ def resolve_units(spec: dict, options: dict) -> tuple:
             units[f] = canonical[f]
         elif canonical.get(f) is not None:
             problems.append(error(
-                f"The unit of {f!r} is not stated. This diagnostic uses {canonical[f]!r}: either confirm the file's "
+                f"The unit of {f!r} is not stated. This program uses {canonical[f]!r}: either confirm the file's "
                 f"values are in {canonical[f]!r}, or enter the unit they are in.", None, f))
     return units, problems
 

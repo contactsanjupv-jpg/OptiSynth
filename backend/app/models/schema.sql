@@ -175,7 +175,9 @@ CREATE TABLE IF NOT EXISTS user_sessions (
     organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
-    revoked_at TEXT
+    revoked_at TEXT,
+    user_agent TEXT,
+    ip_address TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_expires ON user_sessions(expires_at);
