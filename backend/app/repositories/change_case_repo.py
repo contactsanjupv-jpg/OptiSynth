@@ -6,21 +6,51 @@ from backend.app.repositories._time import now_iso
 
 def create_change_case(organization_id: int, created_by_user_id: int, name: str,
                         trigger_type: str, restricted_substance: str,
-                        qualification_spec_json: str) -> int:
+                        qualification_spec_json: str, details: dict = None, owner_user_id: int = None,
+                        target: dict = None) -> int:
+    """Creates the program and, in the same transaction, the register row for the target in its spec (the ranking
+    target), so a program never exists without it."""
+    import json
+    details = details or {}
+    now = now_iso()
     with db_transaction() as conn:
         row = conn.execute(
             text("""INSERT INTO change_cases
                      (organization_id, created_by_user_id, name, trigger_type,
                       restricted_substance, qualification_spec_json, status,
+                      material_replaced, reason_for_substitution, business_impact, original_formulation,
+                      manufacturing_constraints, target_date, owner_user_id,
                       created_at, updated_at)
                      VALUES (:org_id, :created_by, :name, :trigger_type,
                              :restricted_substance, :spec_json, 'draft',
+                             :material_replaced, :reason_for_substitution, :business_impact, :original_formulation,
+                             :manufacturing_constraints, :target_date, :owner,
                              :created_at, :updated_at) RETURNING id"""),
             {"org_id": organization_id, "created_by": created_by_user_id, "name": name,
              "trigger_type": trigger_type, "restricted_substance": restricted_substance,
-             "spec_json": qualification_spec_json, "created_at": now_iso(), "updated_at": now_iso()},
+             "spec_json": qualification_spec_json, "created_at": now, "updated_at": now,
+             "material_replaced": details.get("material_replaced"), "reason_for_substitution": details.get("reason_for_substitution"),
+             "business_impact": details.get("business_impact"), "original_formulation": details.get("original_formulation"),
+             "manufacturing_constraints": details.get("manufacturing_constraints"), "target_date": details.get("target_date"),
+             "owner": owner_user_id or created_by_user_id},
         ).mappings().first()
-        return row["id"]
+        case_id = row["id"]
+        try:
+            spec = json.loads(qualification_spec_json or "{}")
+            metric, value, direction = spec["target_metric"], float(spec["target_value"]), spec["direction"]
+        except (ValueError, KeyError, TypeError):
+            return case_id
+        target = target or {}
+        conn.execute(
+            text("""INSERT INTO program_requirements
+                     (organization_id, change_case_id, property, threshold, direction, unit, test_method, criticality, source,
+                      is_ranking_target, created_by_user_id, created_at, updated_at)
+                     VALUES (:org, :c, :p, :t, :d, :u, :tm, :crit, :src, 1, :by, :now, :now)"""),
+            {"org": organization_id, "c": case_id, "p": str(metric), "t": value, "d": direction,
+             "u": (spec.get("units") or {}).get(metric), "tm": target.get("test_method"),
+             "crit": target.get("criticality") or "important", "src": target.get("source") or "Program definition",
+             "by": created_by_user_id, "now": now})
+        return case_id
 
 
 def get_change_case(organization_id: int, change_case_id: int):
@@ -144,6 +174,14 @@ def delete_change_case_tree(organization_id: int, change_case_id: int):
                          WHERE organization_id = :org_id AND change_case_id = :case_id"""), params,
             ).all()
         ]
+        for table in ("evidence_reviews", "evidence_conflicts"):
+            conn.execute(text(f"DELETE FROM {table} WHERE organization_id = :org_id AND change_case_id = :case_id"), params)
+        for table in ("requirement_results",):
+            conn.execute(text(f"DELETE FROM {table} WHERE requirement_id IN "
+                              "(SELECT id FROM program_requirements WHERE organization_id = :org_id AND change_case_id = :case_id)"), params)
+        for table in ("program_requirements", "program_reviewers", "program_milestones", "program_comments", "program_tasks",
+                      "program_stage_history"):
+            conn.execute(text(f"DELETE FROM {table} WHERE organization_id = :org_id AND change_case_id = :case_id"), params)
         conn.execute(text(f"DELETE FROM qualification_outcomes WHERE candidate_id IN ({candidate_ids})"), params)
         conn.execute(text(f"DELETE FROM predictions WHERE candidate_id IN ({candidate_ids})"), params)
         conn.execute(text(f"DELETE FROM recommended_experiments WHERE candidate_id IN ({candidate_ids})"), params)

@@ -24,7 +24,7 @@ export class ApiRequestError extends Error {
 }
 
 interface RequestOptions {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   json?: unknown;
   formData?: FormData;
   /** For endpoints returning a binary file (e.g. report download). */

@@ -209,6 +209,8 @@ def ingest_qualification_csv(
         except FileNotFoundError:
             pass
         raise
+    from backend.app.services import evidence_intel_service
+    evidence_intel_service.scan_quietly(organization_id, change_case_id)
     data_quality_status = change_case_rules.classify_data_quality(
         historical_row_count=len(rows_out),
         duplicate_count=duplicate_count,
@@ -238,17 +240,24 @@ def list_dataset_summaries(organization_id: int, change_case_id: int) -> list:
         if pred is not None:
             behind_rankings.add(pred["dataset_version_id"])
     out = []
-    for i, d in enumerate(qualification_dataset_repo.list_datasets_for_change_case(organization_id, change_case_id)):
+    listed = qualification_dataset_repo.list_datasets_for_change_case(organization_id, change_case_id)
+    current_id = next((x["id"] for x in listed if x.get("review_status", "accepted") == "accepted"), None)  # newest first
+    for i, d in enumerate(listed):
         review = json.loads(d["review_json"]) if d.get("review_json") else None
         out.append({
             "id": d["id"],
             "original_filename": d["original_filename"],
             "uploaded_at": d["created_at"],
             "row_count": d["row_count"],
-            "is_current": i == 0,  # list is newest-first
-            # Unambiguous labels: the newest upload is the CURRENT evidence (what the next ranking
-            # uses); every earlier upload is PREVIOUS / SUPERSEDED, kept as history.
-            "status": "current" if i == 0 else "superseded",
+            "is_current": d["id"] == current_id,  # the newest ACCEPTED upload
+            # Unambiguous labels: the newest accepted upload is the CURRENT evidence (what the next ranking
+            # uses); an older accepted upload is PREVIOUS / SUPERSEDED, kept as history. Evidence that is rejected,
+            # excluded or under review shows its review status instead.
+            "status": ("current" if d["id"] == current_id else "superseded") if d.get("review_status", "accepted") == "accepted"
+                      else d["review_status"],
+            "review_status": d.get("review_status", "accepted"),
+            "document_type": d.get("document_type"),
+            "document_version": d.get("document_version"),
             "used_by_displayed_rankings": d["id"] in behind_rankings,
             "has_review_record": review is not None,
             "file_sha256": (review or {}).get("file_sha256"),

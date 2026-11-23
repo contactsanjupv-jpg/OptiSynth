@@ -78,10 +78,11 @@ export function createChangeCase(
   trigger_type: TriggerType,
   restricted_substance: string | null,
   qualification_spec: QualificationSpec,
+  extras: Record<string, string | null> = {},
 ) {
   return apiRequest<ChangeCase>("/api/change-cases", {
     method: "POST",
-    json: { name, trigger_type, restricted_substance, qualification_spec },
+    json: { name, trigger_type, restricted_substance, qualification_spec, ...extras },
   });
 }
 

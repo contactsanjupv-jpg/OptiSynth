@@ -121,7 +121,9 @@ class TestXlsxCustomers(IsolatedApiTestCase):
         self.assertIn("POSSIBLE_UNIT_OR_CONDITION_COLUMN_IGNORED", codes(body["review"], "warning"))
         exps = self.experiments(org_id, body["dataset_id"])
         prov = json.loads(exps[0]["provenance_json"])
+        values = prov.pop("values")  # Level 4 adds the original and normalized values to the source reference
         self.assertEqual(prov, {"file": "cust.xlsx", "table": "xlsx:Data", "location": "Sheet 'Data'", "row": 2})
+        self.assertTrue(values and all({"original_value", "original_unit", "normalized_value", "transformation"} <= set(v) for v in values.values()))
         self.assertEqual(json.loads(exps[11]["provenance_json"])["row"], 13)
         ds = self.datasets(org_id, case_id)[0]
         self.assertTrue(ds["stored_filename"].endswith(".xlsx"))  # the original file is kept, with its real type

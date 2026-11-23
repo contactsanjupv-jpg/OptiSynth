@@ -105,6 +105,11 @@ function ProgramsPageInner() {
   const [targetUnit, setTargetUnit] = useState("");
   const [targetValue, setTargetValue] = useState("");
   const [direction, setDirection] = useState<"maximize" | "minimize">("maximize");
+  const [materialReplaced, setMaterialReplaced] = useState("");
+  const [reason, setReason] = useState("");
+  const [businessImpact, setBusinessImpact] = useState("");
+  const [targetDate, setTargetDate] = useState("");
+  const [targetCriticality, setTargetCriticality] = useState("critical");
   const [creating, setCreating] = useState(false);
 
   const router = useRouter();
@@ -241,7 +246,11 @@ function ProgramsPageInner() {
         target_value: parseFloat(targetValue),
         direction,
         units,
+      }, {
+        material_replaced: materialReplaced || null, reason_for_substitution: reason || null,
+        business_impact: businessImpact || null, target_date: targetDate || null, target_criticality: targetCriticality,
       });
+      setMaterialReplaced(""); setReason(""); setBusinessImpact(""); setTargetDate(""); setTargetCriticality("critical");
       setName(""); setRestrictedSubstance(""); setFeatures([{ name: "", unit: "" }]);
       setTargetMetric(""); setTargetUnit(""); setTargetValue("");
       setShowForm(false);
@@ -293,6 +302,35 @@ function ProgramsPageInner() {
                 <input value={restrictedSubstance} onChange={(e) => setRestrictedSubstance(e.target.value)}
                   placeholder="e.g. PFAS-based fluorosurfactant leveling agent"
                   style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
+              </div>
+              <div>
+                <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Material being replaced (optional)</label>
+                <input value={materialReplaced} onChange={(e) => setMaterialReplaced(e.target.value)}
+                  style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
+              </div>
+              <div>
+                <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Reason for substitution (optional)</label>
+                <input value={reason} onChange={(e) => setReason(e.target.value)}
+                  style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
+              </div>
+              <div>
+                <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Business impact (optional)</label>
+                <input value={businessImpact} onChange={(e) => setBusinessImpact(e.target.value)}
+                  style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
+              </div>
+              <div>
+                <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>Target completion date (optional)</label>
+                <input value={targetDate} onChange={(e) => setTargetDate(e.target.value)} type="date"
+                  style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }} />
+              </div>
+              <div>
+                <label style={{ fontSize: "var(--text-xs)", color: "var(--color-text-secondary)" }}>How critical is the target requirement</label>
+                <select value={targetCriticality} onChange={(e) => setTargetCriticality(e.target.value)}
+                  style={{ display: "block", width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", border: "1px solid var(--color-border-strong)", fontSize: "var(--text-sm)", marginTop: 4 }}>
+                  <option value="critical">Critical</option>
+                  <option value="important">Important</option>
+                  <option value="informational">Informational</option>
+                </select>
               </div>
               <p style={{ fontSize: "var(--text-xs)", color: "var(--color-text-tertiary)", margin: 0 }}>
                 One program covers ONE qualification requirement. Define the fields the analysis uses below;

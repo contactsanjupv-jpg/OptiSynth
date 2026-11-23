@@ -63,7 +63,8 @@ def create_dataset_with_experiments(organization_id: int, change_case_id: int, u
 
 
 def get_latest_dataset_for_change_case(organization_id: int, change_case_id: int):
-    """The most recently uploaded dataset for a change case -- used as the
+    """The most recently uploaded ACCEPTED dataset for a change case (rejected, excluded and superseded evidence is kept as
+    history but is not evidence; evidence under review pauses ranking, see change_case_service.rank_change_case) -- used as the
     dataset_version_id stamped onto every prediction, so a re-upload
     naturally produces predictions tied to the NEW data, never silently
     reusing a stale version."""
@@ -71,6 +72,7 @@ def get_latest_dataset_for_change_case(organization_id: int, change_case_id: int
         row = conn.execute(
             text("""SELECT * FROM qualification_datasets
                      WHERE organization_id = :org_id AND change_case_id = :change_case_id
+                       AND review_status = 'accepted'
                      ORDER BY id DESC LIMIT 1"""),
             {"org_id": organization_id, "change_case_id": change_case_id},
         ).mappings().first()

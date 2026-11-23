@@ -77,6 +77,10 @@ def update_case(organization_id: int, change_case_id: int, changes: dict) -> dic
         fields["qualification_spec_json"] = json.dumps(validate_qualification_spec(spec))
 
     change_case_repo.update_change_case_fields(organization_id, change_case_id, fields)
+    if "qualification_spec_json" in fields:  # the register row of the ranking target follows the spec the ranking reads
+        from backend.app.repositories import program_workspace_repo
+        new_spec = json.loads(fields["qualification_spec_json"])
+        program_workspace_repo.sync_ranking_target(organization_id, change_case_id, float(new_spec["target_value"]), new_spec["direction"])
     return get_case_or_404(organization_id, change_case_id)
 
 

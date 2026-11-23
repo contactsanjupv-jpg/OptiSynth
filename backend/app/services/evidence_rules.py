@@ -774,10 +774,15 @@ def _analyze_rows_impl(spec, headers, data_rows, options, row_refs=None):
 
     # ---- apply conversions ---------------------------------------------------
     for p in parsed:
+        p["orig"] = {}
         for canon in required:
             value, cell_unit = p["cells"][canon]
             E = spec_units.get(canon)
             u = cell_unit or declared.get(canon)
+            # What was read, before any conversion. Kept in the row's provenance so every stored value can be traced back.
+            p["orig"][canon] = {"original_value": value, "original_unit": u,
+                                "unit_source": "file" if cell_unit else ("declared by the reviewer" if u else None),
+                                "canonical_unit": E}
             if E is not None and u is not None:
                 _, value = convert_value(value, u, E)
             p["cells"][canon] = (value, None)
@@ -832,7 +837,7 @@ def _analyze_rows_impl(spec, headers, data_rows, options, row_refs=None):
     for p in parsed:
         features = {c: p["cells"][c][0] for c in feature_columns}
         target_value = p["cells"][target][0]
-        rows_out.append({"features": features, "target_value": target_value, "_row": p["row"]})
+        rows_out.append({"features": features, "target_value": target_value, "_row": p["row"], "_orig": p.get("orig")})
         groups.setdefault(tuple(sorted(features.items())), []).append((p["row"], target_value))
     targets = [r["target_value"] for r in rows_out]
     overall_range = (max(targets) - min(targets)) if targets else 0.0
@@ -866,8 +871,20 @@ def _analyze_rows_impl(spec, headers, data_rows, options, row_refs=None):
                         "excluded_other_conditions": excluded_other_conditions}
     for r in rows_out:
         ri = r.pop("_row", None)
+        orig = r.pop("_orig", None)
         if row_refs and ri:
-            r["provenance"] = row_refs[ri - 1]
+            r["provenance"] = dict(row_refs[ri - 1])
+            if orig:
+                values = {}
+                for col, o in orig.items():
+                    normalized = r["target_value"] if col == target else r["features"].get(col)
+                    canonical = o["canonical_unit"]
+                    converted = canonical is not None and o["original_unit"] is not None and normalize_unit(o["original_unit"]) != normalize_unit(canonical)
+                    values[col] = {**o, "normalized_value": normalized,
+                                   "normalized_unit": canonical if canonical is not None else o["original_unit"],
+                                   "transformation": (f"Converted from {o['original_unit']} to {canonical} with an exact factor" if converted
+                                                      else "None. The value was used as read.")}
+                r["provenance"]["values"] = values
     if blocking_flags(flags):
         return review, [], errors
     return review, rows_out, errors

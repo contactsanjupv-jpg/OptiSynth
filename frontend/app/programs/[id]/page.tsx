@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/layout/AppShell";
 import { Topbar } from "@/components/layout/Topbar";
 import { Breadcrumbs } from "@/components/layout/Breadcrumbs";
@@ -13,7 +13,13 @@ import { Badge } from "@/components/ui/Badge";
 import { Dialog } from "@/components/ui/Dialog";
 import { ErrorCallout, Spinner } from "@/components/ui/Feedback";
 import { CandidateImport } from "@/components/change-cases/CandidateImport";
-import { StagePanel } from "@/components/change-cases/StagePanel";
+import { OverviewTab } from "@/components/programs/OverviewTab";
+import { RequirementsTab } from "@/components/programs/RequirementsTab";
+import { ActivityTab } from "@/components/programs/ActivityTab";
+import { EvidencePanel } from "@/components/evidence/EvidencePanel";
+import { LaterLevelPanel } from "@/components/programs/LaterLevelPanel";
+import { getWorkspace, type Workspace } from "@/lib/api/workspace";
+import "@/styles/components/program-workspace.css";
 import { useRequireAuth } from "@/lib/auth/useRequireAuth";
 import {
   getChangeCase, addCandidate, listCandidates, listEvidence, getSufficiency, parseSpec,
@@ -69,10 +75,33 @@ const NOTICE_STYLE: React.CSSProperties = {
   borderRadius: "var(--radius-sm)", fontSize: "var(--text-xs)", color: "#78350f",
 };
 
-export default function ChangeCaseDetailPage() {
+const TABS = [
+  { key: "overview", label: "Overview" }, { key: "requirements", label: "Requirements" }, { key: "evidence", label: "Evidence" },
+  { key: "candidates", label: "Candidates" }, { key: "analysis", label: "Analysis" }, { key: "experiments", label: "Experiments" },
+  { key: "physical", label: "Physical results" }, { key: "qualification", label: "Qualification" }, { key: "reports", label: "Reports" },
+  { key: "activity", label: "Activity" },
+] as const;
+type TabKey = (typeof TABS)[number]["key"];
+
+function ChangeCaseDetailPage() {
   const params = useParams();
   const changeCaseId = Number(params.id);
   const { checking } = useRequireAuth();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const requestedTab = searchParams.get("tab");
+  const tab: TabKey = TABS.some((t) => t.key === requestedTab) ? (requestedTab as TabKey) : "overview";
+  const [ws, setWs] = useState<Workspace | null>(null);
+  const refreshWs = useCallback(() => { getWorkspace(changeCaseId).then(setWs).catch(() => undefined); }, [changeCaseId]);
+  useEffect(() => { if (!checking && changeCaseId) refreshWs(); }, [checking, changeCaseId, refreshWs]);
+  function selectTab(key: TabKey) { router.replace(`/programs/${changeCaseId}?tab=${key}`); }
+  function onTabKey(e: React.KeyboardEvent, index: number) {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    const target = TABS[(index + (e.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length];
+    if (!target) return;
+    selectTab(target.key);
+    document.getElementById(`pw-tab-${target.key}`)?.focus();
+  }
 
   const [changeCase, setChangeCase] = useState<ChangeCase | null>(null);
   const [candidates, setCandidates] = useState<Candidate[] | null>(null);
@@ -321,8 +350,18 @@ export default function ChangeCaseDetailPage() {
           </div>
         )}
 
-        <StagePanel changeCaseId={changeCaseId} onChanged={load} />
-
+        <div role="tablist" aria-label="Program sections" className="pw-tabs">
+          {TABS.map((t, i) => (
+            <button key={t.key} id={`pw-tab-${t.key}`} role="tab" type="button" className="pw-tab" aria-selected={tab === t.key}
+              aria-controls="pw-panel" tabIndex={tab === t.key ? 0 : -1} onClick={() => selectTab(t.key)} onKeyDown={(e) => onTabKey(e, i)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div id="pw-panel" role="tabpanel" aria-labelledby={`pw-tab-${tab}`}>
+        {tab === "overview" && (ws ? <OverviewTab changeCaseId={changeCaseId} ws={ws} onChange={setWs} onStageChanged={() => { load(); refreshWs(); }} /> : <Spinner label="Loading program" />)}
+        {tab === "requirements" && (ws ? <RequirementsTab changeCaseId={changeCaseId} ws={ws} onChange={setWs} /> : <Spinner label="Loading requirements" />)}
+        {tab === "evidence" && (<>
         <Card padding="lg" style={{ marginBottom: 20 }}>
           <CardHeader><CardTitle>1. Customer evidence</CardTitle></CardHeader>
           <p style={{ fontSize: "var(--text-sm)", color: "var(--color-text-tertiary)", marginBottom: 10 }}>
@@ -365,7 +404,9 @@ export default function ChangeCaseDetailPage() {
             </Link>
           </div>
         </Card>
-
+        <EvidencePanel changeCaseId={changeCaseId} onChanged={() => { load(); refreshWs(); }} />
+        </>)}
+        {tab === "candidates" && (
         <Card padding="lg" style={{ marginBottom: 20 }}>
           <CardHeader><CardTitle>2. Candidate substitutes ({activeCandidates.length})</CardTitle></CardHeader>
           {archivedCase && (
@@ -629,7 +670,8 @@ export default function ChangeCaseDetailPage() {
             </Button>
           </div>
         </Card>
-
+        )}
+        {tab === "reports" && (
         <Card padding="lg">
           <CardHeader><CardTitle>3. Program report</CardTitle></CardHeader>
           <p style={{ fontSize: "var(--text-sm)", color: "var(--color-text-tertiary)", marginBottom: 10 }}>
@@ -639,6 +681,25 @@ export default function ChangeCaseDetailPage() {
             Download program report (.docx)
           </Button>
         </Card>
+        )}
+        {tab === "analysis" && (
+          <LaterLevelPanel title="Model validation and decision analysis" description="Validation metrics, applicability checks and candidate trade-offs will appear here. Until then, the ranking and its evidence sufficiency check are on the Candidates tab."
+            action={<Button variant="secondary" onClick={() => selectTab("candidates")}>Open candidates</Button>} />
+        )}
+        {tab === "experiments" && (
+          <LaterLevelPanel title="Experiment planning" description="Experiment design, prioritization and tracking will appear here. The suggested validation step for each ranked candidate is on the Candidates tab."
+            action={<Button variant="secondary" onClick={() => selectTab("candidates")}>Open candidates</Button>} />
+        )}
+        {tab === "physical" && (
+          <LaterLevelPanel title="Physical results" description="Physical results are recorded on each ranked candidate. Results for the other requirements are recorded in the requirements register."
+            action={<><Button variant="secondary" onClick={() => selectTab("candidates")}>Open candidates</Button> <Button variant="secondary" onClick={() => selectTab("requirements")}>Open requirements</Button></>} />
+        )}
+        {tab === "qualification" && (
+          <LaterLevelPanel title="Qualification record" description="The requirement by requirement matrix, deviations, approvals and the qualification passport will appear here. The current stage, decisions and the status of each requirement are on the Overview and Requirements tabs."
+            action={<Button variant="secondary" onClick={() => selectTab("requirements")}>Open requirements</Button>} />
+        )}
+        {tab === "activity" && ws && <ActivityTab changeCaseId={changeCaseId} canDecide={ws.permissions.can_decide} />}
+        </div>
 
         {dialog?.kind === "edit" && (() => {
           const c = dialog.c;
@@ -733,5 +794,13 @@ export default function ChangeCaseDetailPage() {
         )}
       </div>
     </AppShell>
+  );
+}
+
+export default function ProgramPage() {
+  return (
+    <Suspense fallback={null}>
+      <ChangeCaseDetailPage />
+    </Suspense>
   );
 }

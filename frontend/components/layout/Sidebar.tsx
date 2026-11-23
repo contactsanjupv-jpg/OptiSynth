@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Settings, Atom, LogOut, ClipboardList, LayoutGrid } from "lucide-react";
+import { Settings, Atom, LogOut, ClipboardList, LayoutGrid, FileText } from "lucide-react";
 import { getSessionCache, clearSessionCache } from "@/lib/auth/session";
 import { logout } from "@/lib/api/auth";
 import { useEffect, useState } from "react";
@@ -13,6 +13,7 @@ import "@/styles/components/sidebar.css";
 const NAV_ITEMS = [
   { href: "/overview", label: "Overview", icon: LayoutGrid },
   { href: "/programs", label: "Programs", icon: ClipboardList },
+  { href: "/evidence", label: "Evidence", icon: FileText },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

@@ -65,6 +65,8 @@ def _evidence_problem(target: str, facts: dict):
         return "Record at least one physical result before engineering review."
     if target == APPROVED and facts["passed_outcome_count"] < 1:
         return "Approval needs at least one recorded physical result that met the target."
+    if target == APPROVED and facts.get("unsupported_critical"):
+        return "Critical requirements without a recorded result that met them: " + ", ".join(facts["unsupported_critical"]) + "."
     return None
 
 

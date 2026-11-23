@@ -7,6 +7,8 @@ def _facts_or_404(organization_id: int, change_case_id: int) -> dict:
     facts = program_stage_repo.program_facts(organization_id, change_case_id)
     if not facts:
         raise LookupError("Program not found.")
+    from backend.app.services import program_workspace_service
+    facts["unsupported_critical"] = program_workspace_service.unsupported_critical_names(organization_id, change_case_id)
     return facts
 
 

@@ -160,6 +160,17 @@ class CreateChangeCaseRequest(BaseModel):
     trigger_type: TriggerType
     restricted_substance: str | None = None
     qualification_spec: dict = Field(default_factory=dict)
+    # Substitution details, all optional. The owner defaults to the person creating the program.
+    material_replaced: str | None = Field(default=None, max_length=600)
+    reason_for_substitution: str | None = Field(default=None, max_length=4000)
+    business_impact: str | None = Field(default=None, max_length=4000)
+    original_formulation: str | None = Field(default=None, max_length=4000)
+    manufacturing_constraints: str | None = Field(default=None, max_length=4000)
+    target_date: str | None = None
+    owner_user_id: int | None = None
+    target_criticality: Literal["critical", "important", "informational"] = "important"
+    target_test_method: str | None = Field(default=None, max_length=400)
+    target_source: str | None = Field(default=None, max_length=400)
 
 
 class UpdateStatusRequest(BaseModel):

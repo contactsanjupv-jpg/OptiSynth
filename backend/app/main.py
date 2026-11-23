@@ -25,7 +25,7 @@ from backend.app.middleware.upload_limits import UploadSizeLimitMiddleware
 from backend.app.api.routes import (
     auth_routes, project_routes, dataset_routes, optimization_routes,
     report_routes, dashboard_routes, team_routes, change_case_routes,
-    program_stage_routes, portfolio_routes, notification_routes, admin_routes,
+    program_stage_routes, portfolio_routes, notification_routes, admin_routes, program_workspace_routes, evidence_routes,
 )
 
 
@@ -79,6 +79,8 @@ def create_app() -> FastAPI:
     app.include_router(portfolio_routes.router)
     app.include_router(notification_routes.router)
     app.include_router(admin_routes.router)
+    app.include_router(program_workspace_routes.router)
+    app.include_router(evidence_routes.router)
 
     @app.get("/health")
     def health():

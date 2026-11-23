@@ -69,7 +69,7 @@ from backend.app.schemas.errors import ValidationError
 
 def create_change_case(organization_id: int, created_by_user_id: int, name: str,
                        trigger_type: str, restricted_substance: str,
-                       qualification_spec: dict) -> dict:
+                       qualification_spec: dict, extras: dict = None) -> dict:
 
     # B3: optional 'units' in the spec are the canonical units the dataset and
     # candidate inputs are expressed in. Absent = unchanged behaviour.
@@ -80,10 +80,27 @@ def create_change_case(organization_id: int, created_by_user_id: int, name: str,
     # created without them could never be ranked. Enforced here (not only in the form) so that direct API calls,
     # scripts and any other caller get the same refusal.
     change_case_rules.check_units_declared_at_creation(qualification_spec)
+    from backend.app.services import program_workspace_rules as workspace_rules
+    extras = extras or {}
+    details = {f: workspace_rules.clean_detail(f, extras.get(f)) for f in workspace_rules.DETAIL_FIELDS}
+    details["target_date"] = workspace_rules.clean_date(extras.get("target_date"), "target_date")
+    owner_id = extras.get("owner_user_id")
+    if owner_id is not None:
+        from backend.app.repositories import program_workspace_repo
+        if not program_workspace_repo.is_active_member(organization_id, owner_id):
+            raise ValidationError("Choose a person from your organization.", field="owner_user_id")
+    target = {"criticality": extras.get("target_criticality") or "important",
+              "test_method": workspace_rules.clean_text(extras.get("target_test_method"), "target_test_method", 200, "The test method"),
+              "source": workspace_rules.clean_text(extras.get("target_source"), "target_source", 200, "The source")}
     change_case_id = change_case_repo.create_change_case(
         organization_id, created_by_user_id, name, trigger_type,
         restricted_substance, json.dumps(qualification_spec),
+        details=details, owner_user_id=owner_id or created_by_user_id, target=target,
     )
+    if owner_id and owner_id != created_by_user_id:
+        from backend.app.repositories import notifications_repo
+        notifications_repo.create_many(organization_id, [owner_id], "assigned", "You are the program owner", name,
+                                       f"/programs/{change_case_id}")
 
     case = change_case_repo.get_change_case(organization_id, change_case_id)
     # Say plainly what an explicit-but-unrecognised label means (exact-match only, not dimensionally validated).
@@ -113,6 +130,10 @@ def update_status(organization_id: int, change_case_id: int, new_status: str, ac
     case = get_change_case_or_404(organization_id, change_case_id)
 
     change_case_rules.check_status_transition_allowed(case["status"], new_status)
+
+    if new_status == "completed":  # critical requirements need a recorded result and a decision before a program is closed
+        from backend.app.services import program_workspace_service
+        program_workspace_service.check_can_complete(organization_id, change_case_id)
 
     change_case_repo.update_status(organization_id, change_case_id, new_status)
 
@@ -469,6 +490,12 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
             "Upload a qualification dataset before requesting a ranking.",
             field="dataset",
         )
+    from backend.app.repositories import evidence_intel_repo
+    held = evidence_intel_repo.newest_held_after(organization_id, change_case_id, dataset["id"])
+    if held:  # newer evidence is under review: ranking on older data would quietly skip it
+        raise ValidationError(
+            f"{held['original_filename']} is under review ({held['review_status'].replace('_', ' ')}). Accept, reject, exclude or "
+            "supersede it before ranking.", field="dataset")
     experiments = qualification_dataset_repo.list_experiments_for_dataset(organization_id, dataset["id"])
     candidates = candidate_repo.list_candidates_for_change_case(organization_id, change_case_id)
 

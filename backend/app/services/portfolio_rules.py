@@ -14,6 +14,10 @@ ISSUES = {
     "inputs_changed": (MEDIUM, "Candidate inputs changed after ranking"),
     "test_pending": (MEDIUM, "Physical results pending"),
     "ranking_needed": (MEDIUM, "Candidates need ranking"),
+    "evidence_conflict": (MEDIUM, "Evidence conflict needs resolution"),
+    "evidence_held": (MEDIUM, "Evidence is waiting for a review decision"),
+    "overdue_milestone": (MEDIUM, "Milestone overdue"),
+    "overdue_task": (MEDIUM, "Review task overdue"),
     "evidence_needed": (LOW, "No evidence uploaded"),
     "candidates_needed": (LOW, "No candidates added"),
 }
@@ -33,6 +37,18 @@ def derive_issues(f: dict) -> list:
         severity, label = ISSUES[kind]
         found.append({"type": kind, "severity": severity, "label": label, "detail": detail})
 
+    if f.get("open_conflict_count", 0) > 0:
+        n = f["open_conflict_count"]
+        add("evidence_conflict", f"{n} conflict{'s' if n != 1 else ''}")
+    if f.get("held_evidence_count", 0) > 0:
+        n = f["held_evidence_count"]
+        add("evidence_held", f"{n} document{'s' if n != 1 else ''}")
+    if f.get("overdue_milestone_count", 0) > 0:
+        n = f["overdue_milestone_count"]
+        add("overdue_milestone", f"{n} milestone{'s' if n != 1 else ''}")
+    if f.get("overdue_task_count", 0) > 0:
+        n = f["overdue_task_count"]
+        add("overdue_task", f"{n} task{'s' if n != 1 else ''}")
     if f["stage"] == stages.ENGINEERING_REVIEW:
         add("decision_needed")
     if f["failed_outcome_count"] > 0:

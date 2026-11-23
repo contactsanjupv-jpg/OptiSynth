@@ -51,6 +51,9 @@ async def create_change_case(body: CreateChangeCaseRequest, actor: AuthContext =
     case = change_case_service.create_change_case(
         actor.organization_id, actor.user["id"], body.name, body.trigger_type,
         body.restricted_substance, spec,
+        extras=body.model_dump(include={"material_replaced", "reason_for_substitution", "business_impact", "original_formulation",
+                                        "manufacturing_constraints", "target_date", "owner_user_id", "target_criticality",
+                                        "target_test_method", "target_source"}),
     )
     audit_service.log(actor.organization_id, actor.user["id"], "change_case.create", detail=f"change_case_id={case['id']} name={body.name}")
     return case

@@ -10,7 +10,7 @@ def program_facts(organization_id: int, change_case_id: int):
     with db_connection() as conn:
         row = conn.execute(
             text("""SELECT c.id, c.status, c.stage, c.archived_at,
-                    (SELECT COUNT(*) FROM qualification_datasets d WHERE d.change_case_id = c.id) AS dataset_count,
+                    (SELECT COUNT(*) FROM qualification_datasets d WHERE d.change_case_id = c.id AND d.review_status = 'accepted') AS dataset_count,
                     (SELECT COUNT(*) FROM candidate_substitutes cs WHERE cs.change_case_id = c.id AND cs.archived_at IS NULL) AS candidate_count,
                     (SELECT COUNT(*) FROM predictions p JOIN candidate_substitutes cs ON cs.id = p.candidate_id
                       WHERE cs.change_case_id = c.id AND cs.archived_at IS NULL) AS prediction_count,
