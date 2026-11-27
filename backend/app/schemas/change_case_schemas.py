@@ -300,6 +300,8 @@ class PredictionResponse(BaseModel):
     predicted_probability: float
     model_version: str
     dataset_version_id: int
+    # The registered model version that made this prediction. None for predictions made before model versions existed.
+    model_version_id: int | None = None
 
     model_config = {"protected_namespaces": ()}
 
@@ -347,6 +349,9 @@ class CandidateResponse(BaseModel):
     # C1: categorical decision support derived only from domain_coverage
     # (evidence_supported / caution / requires_validation). None until ranked.
     decision_support: dict | None = None
+    # Level 5: where the combination of inputs sits against the training evidence of the model version that made the
+    # prediction. Kept separate from domain_coverage, which is the per-feature range check. None until ranked.
+    input_space_applicability: dict | None = None
     # 1 = best, by the same deterministic ordering the ranking run uses (probability, then predicted
     # value in the favorable direction, then candidate id). None until the candidate has a prediction.
     rank: int | None = None
@@ -384,6 +389,7 @@ class RankResultResponse(BaseModel):
     recommended_experiment: str
     domain_coverage: dict | None = None
     decision_support: dict | None = None
+    input_space_applicability: dict | None = None
     model_quality: dict | None = None
     uncertainty_calibration: dict | None = None
 

@@ -18,6 +18,7 @@ import { RequirementsTab } from "@/components/programs/RequirementsTab";
 import { ActivityTab } from "@/components/programs/ActivityTab";
 import { EvidencePanel } from "@/components/evidence/EvidencePanel";
 import { LaterLevelPanel } from "@/components/programs/LaterLevelPanel";
+import { ModelAnalysisPanel } from "@/components/models/ModelAnalysisPanel";
 import { getWorkspace, type Workspace } from "@/lib/api/workspace";
 import "@/styles/components/program-workspace.css";
 import { useRequireAuth } from "@/lib/auth/useRequireAuth";
@@ -41,8 +42,13 @@ function decisionTone(ds: DecisionSupport | null): "neutral" | "accent" | "warni
   if (!ds) return "warning"; // prediction exists but no decision-support signal: treat as unverified
   if (ds.status === "requires_validation") return "danger";
   if (ds.status === "caution") return "warning";
+  if (ds.status === "not_assessed") return "neutral"; // the combination of inputs could not be assessed: never shown as supported
   return "accent"; // within_data_range: a per-feature range check only; informational, still requires physical validation
 }
+
+const INPUT_SPACE_LABEL: Record<string, string> = {
+  within_training_spacing: "Within training spacing", sparse_region: "Sparse region", isolated: "Isolated", not_assessed: "Not assessed",
+};
 
 const DOMAIN_STATUS_LABEL: Record<DomainStatus, string> = {
   within_historical_domain: "Within observed range",
@@ -596,6 +602,21 @@ function ChangeCaseDetailPage() {
                         Historical domain{c.prediction_stale ? " (previous evidence)" : ""}:{" "}
                         {c.domain_coverage ? DOMAIN_STATUS_LABEL[c.domain_coverage.status] : "Not determined"}
                       </div>
+                      <div style={{ marginTop: 4 }} data-testid="input-space">
+                        Combination of inputs{c.prediction_stale ? " (previous evidence)" : ""}:{" "}
+                        {INPUT_SPACE_LABEL[c.input_space_applicability?.class ?? "not_assessed"]}
+                        {c.input_space_applicability?.status === "assessed" && c.input_space_applicability.thresholds && c.input_space_applicability.nearest_distance != null && (
+                          <span style={{ color: "var(--color-text-tertiary)" }}>
+                            {` (distance ${c.input_space_applicability.nearest_distance.toFixed(3)}, sparse above ${c.input_space_applicability.thresholds.sparse_above.toFixed(3)}, isolated above ${c.input_space_applicability.thresholds.isolated_above.toFixed(3)})`}
+                          </span>
+                        )}
+                        {c.input_space_applicability?.status === "not_assessed" && c.input_space_applicability.reason && (
+                          <span style={{ color: "var(--color-text-tertiary)" }}>{` (${c.input_space_applicability.reason})`}</span>
+                        )}
+                        {c.input_space_applicability?.model_version_id != null && (
+                          <>{" "}<Link href={`/models/${c.input_space_applicability.model_version_id}?tab=applicability`}>{`Model version ${c.input_space_applicability.model_version_number} applicability`}</Link></>
+                        )}
+                      </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
                         <span>Decision support{c.prediction_stale ? " (previous evidence)" : ""}:</span>
                         <Badge tone={decisionTone(c.decision_support)}>
@@ -682,10 +703,7 @@ function ChangeCaseDetailPage() {
           </Button>
         </Card>
         )}
-        {tab === "analysis" && (
-          <LaterLevelPanel title="Model validation and decision analysis" description="Validation metrics, applicability checks and candidate trade-offs will appear here. Until then, the ranking and its evidence sufficiency check are on the Candidates tab."
-            action={<Button variant="secondary" onClick={() => selectTab("candidates")}>Open candidates</Button>} />
-        )}
+        {tab === "analysis" && <ModelAnalysisPanel programId={changeCaseId} canRun={Boolean(ws?.permissions.can_decide)} />}
         {tab === "experiments" && (
           <LaterLevelPanel title="Experiment planning" description="Experiment design, prioritization and tracking will appear here. The suggested validation step for each ranked candidate is on the Candidates tab."
             action={<Button variant="secondary" onClick={() => selectTab("candidates")}>Open candidates</Button>} />

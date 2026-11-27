@@ -250,10 +250,10 @@ def _insert_prediction(conn, organization_id: int, dataset_version_id: int, r: d
     conn.execute(
         text("""INSERT INTO predictions
                  (organization_id, candidate_id, dataset_version_id, model_version,
-                  predicted_probability, uncertainty_std, predicted_value, inputs_version, created_at)
+                  predicted_probability, uncertainty_std, predicted_value, inputs_version, model_version_id, created_at)
                  VALUES (:org_id, :candidate_id, :dataset_version_id, :model_version,
-                         :predicted_probability, :uncertainty_std, :predicted_value, :inputs_version, :created_at)"""),
-        {"org_id": organization_id, "candidate_id": r["candidate_id"],
+                         :predicted_probability, :uncertainty_std, :predicted_value, :inputs_version, :model_version_id, :created_at)"""),
+        {"org_id": organization_id, "candidate_id": r["candidate_id"], "model_version_id": r.get("model_version_id"),
          "dataset_version_id": dataset_version_id, "model_version": r["model_version"],
          "predicted_probability": r["predicted_probability"], "uncertainty_std": r["uncertainty_std"],
          "predicted_value": r["predicted_value"], "inputs_version": int(r.get("inputs_version", 0) or 0),

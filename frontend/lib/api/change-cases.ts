@@ -313,7 +313,7 @@ export interface DomainCoverage {
   note: string;
 }
 
-export type DecisionSupportStatus = "within_data_range" | "caution" | "requires_validation";
+export type DecisionSupportStatus = "within_data_range" | "caution" | "requires_validation" | "not_assessed";
 
 /**
  * Categorical decision support (backend C1), derived ONLY from domain
@@ -329,8 +329,27 @@ export interface DecisionSupport {
   /** What the signal does NOT establish (joint coverage, accuracy for this candidate, performance, compliance, qualification). */
   not_established?: string[];
   domain_status: DomainStatus | null;
+  /** The per-feature range check on its own. The ranking order follows this, not the combined label. */
+  range_check_status?: DecisionSupportStatus;
+  input_space_class?: string;
   label: string;
   statement: string;
+}
+
+/**
+ * Where the combination of a candidate's inputs sits against the training evidence of the model version that made its
+ * prediction. Separate from the per-feature range check (domain_coverage).
+ */
+export interface InputSpaceApplicability {
+  status: "assessed" | "not_assessed";
+  class: "within_training_spacing" | "sparse_region" | "isolated" | "not_assessed";
+  reason: string | null;
+  nearest_distance: number | null;
+  thresholds: { sparse_above: number; isolated_above: number; reference_points: number } | null;
+  nearest_training_input_set: Record<string, number> | null;
+  nearest_training_rows: number | null;
+  model_version_id: number | null;
+  model_version_number: number | null;
 }
 
 export type RankingStatus = "ranked" | "ranked_with_caution" | "not_ranked_insufficient_evidence";
@@ -357,6 +376,7 @@ export interface Candidate {
   domain_coverage: DomainCoverage | null;
   /** null until the candidate has been ranked. */
   decision_support: DecisionSupport | null;
+  input_space_applicability?: InputSpaceApplicability | null;
   /** 1 = best, by the same deterministic order the ranking run used. null until the candidate has a prediction,
    *  and withheld (null) whenever the ranking no longer covers the candidates as they are now. */
   rank?: number | null;
@@ -536,6 +556,7 @@ export interface RankResult {
   recommended_experiment: string;
   domain_coverage: DomainCoverage | null;
   decision_support: DecisionSupport | null;
+  input_space_applicability?: InputSpaceApplicability | null;
 }
 
 export function rankChangeCase(changeCaseId: number) {

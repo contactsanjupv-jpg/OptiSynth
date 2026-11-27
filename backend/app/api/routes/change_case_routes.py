@@ -290,7 +290,7 @@ async def delete_candidate(change_case_id: int, candidate_id: int, actor: AuthCo
 @router.post("/{change_case_id}/rank")
 async def rank_change_case(change_case_id: int, actor: AuthContext = Depends(get_current_actor)):
     _writable_case(actor, change_case_id)
-    results = change_case_service.rank_change_case(actor.organization_id, change_case_id)
+    results = change_case_service.rank_change_case(actor.organization_id, change_case_id, user_id=actor.user["id"])
     audit_service.log(actor.organization_id, actor.user["id"], "change_case.rank",
                        detail=f"change_case_id={change_case_id} candidates_ranked={len(results)}")
     return results

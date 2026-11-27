@@ -3989,8 +3989,10 @@ class TestChangeCaseApi(unittest.TestCase):
         ds = far["decision_support"]
         self.assertEqual(ds["status"], "requires_validation")
         self.assertEqual(ds["label"], "Requires validation")
-        self.assertEqual(ds["basis"], "historical_domain_coverage")
+        # Level 5 correction: the label now reflects the per-feature range check and the combination of inputs
+        self.assertEqual(ds["basis"], "historical_domain_coverage_and_input_space_applicability")
         self.assertEqual(ds["domain_status"], "outside_historical_domain")
+        self.assertEqual(ds["range_check_status"], "requires_validation")
 
         # probability and sigma are byte-for-byte what the engine returns
         # on its own for the same data (decision_support altered neither)
@@ -4015,7 +4017,10 @@ class TestChangeCaseApi(unittest.TestCase):
         self.assertEqual(ranked[-1]["candidate_name"], "Far")
 
         self.assertEqual(res["Resin A"]["decision_support"]["status"], "within_data_range")
-        self.assertEqual(res["Edge"]["decision_support"]["status"], "caution")
+        # the range check still says caution. The combined label is never LESS cautious than it, and may be more so
+        # when the combination of inputs is also isolated.
+        self.assertEqual(res["Edge"]["decision_support"]["range_check_status"], "caution")
+        self.assertIn(res["Edge"]["decision_support"]["status"], ("caution", "requires_validation"))
 
     def test_c1_rank_and_candidate_listing_agree(self):
         client, case_id = self._c1_case("c1-agree@coatings.com", "C1 Agree Coatings")
@@ -4043,16 +4048,18 @@ class TestChangeCaseApi(unittest.TestCase):
         client, case_id = self._c1_case("c1-prov@coatings.com", "C1 Prov Coatings")
         client.post(f"/api/change-cases/{case_id}/rank")
 
-        def far_signal():
+        def far_signal(key="status"):
             listed = {c["candidate_name"]: c for c in client.get(f"/api/change-cases/{case_id}/candidates").json()}
-            return listed["Far"]["decision_support"]["status"]
+            return listed["Far"]["decision_support"][key]
 
         self.assertEqual(far_signal(), "requires_validation")
         wide = [(300 + i * 40, 60 + i * 0.1, 70 + i * 0.5) for i in range(16)]  # viscosity 300..900
         self.assertEqual(self._upload_csv(client, case_id, self._csv_from_rows(wide)).status_code, 201)
         self.assertEqual(far_signal(), "requires_validation")  # newer upload must not launder it
         self.assertEqual(client.post(f"/api/change-cases/{case_id}/rank").status_code, 200)
-        self.assertEqual(far_signal(), "within_data_range")  # only a NEW ranking re-stamps it
+        # only a NEW ranking re-stamps it. The per-feature range check is what this test is about. The combined label
+        # can also reflect the combination of inputs, which has its own tests.
+        self.assertEqual(far_signal("range_check_status"), "within_data_range")
 
     def test_c1_prediction_with_unavailable_coverage_fails_safe(self):
         from unittest import mock

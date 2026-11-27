@@ -451,7 +451,7 @@ class TestDeriveDecisionSupport(unittest.TestCase):
         # probability/sigma-like keys must not change the outcome.
         import inspect
         params = set(inspect.signature(change_case_rules.derive_decision_support).parameters)
-        self.assertEqual(params, {"domain_coverage", "has_prediction"})
+        self.assertEqual(params, {"domain_coverage", "has_prediction", "input_space"})  # Level 5: input_space added
         base = change_case_rules.derive_decision_support(self._cov(change_case_rules.DOMAIN_OUTSIDE))
         noisy = self._cov(change_case_rules.DOMAIN_OUTSIDE)
         noisy.update({"predicted_probability": 1.0, "uncertainty_std": 1e-9, "r2_score": 0.99})

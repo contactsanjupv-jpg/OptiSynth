@@ -68,8 +68,10 @@ class TestStatusRules(unittest.TestCase):
     def test_status_is_a_function_of_range_coverage_alone(self):
         # structurally: the only inputs are the coverage and whether a prediction exists, so a probability, an
         # uncertainty, a model metric or a recorded outcome has no way to reach it
+        # Level 5 correction: the combination of inputs (input_space) is the one added input. A probability, an
+        # uncertainty, a model metric or a recorded outcome still has no way to reach it.
         self.assertEqual(list(inspect.signature(rules.derive_decision_support).parameters),
-                         ["domain_coverage", "has_prediction"])
+                         ["domain_coverage", "has_prediction", "input_space"])
         self.assertIsNone(rules.derive_decision_support(WITHIN, has_prediction=False))
 
     def test_missing_unknown_or_retired_values_fail_safe(self):

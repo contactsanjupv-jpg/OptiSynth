@@ -530,6 +530,9 @@ def classify_candidate_domain_coverage(
 DECISION_WITHIN_DATA_RANGE = "within_data_range"
 DECISION_CAUTION = "caution"
 DECISION_REQUIRES_VALIDATION = "requires_validation"
+DECISION_NOT_ASSESSED = "not_assessed"
+DECISION_SUPPORT_BASIS_INTEGRATED = "historical_domain_coverage_and_input_space_applicability"
+DECISION_SUPPORT_SCOPE_INTEGRATED = "per_feature_range_check_and_input_space_distance"
 DECISION_SUPPORT_BASIS = "historical_domain_coverage"
 DECISION_SUPPORT_SCOPE = "per_feature_range_check"
 
@@ -553,6 +556,7 @@ DECISION_LABELS = {
     DECISION_WITHIN_DATA_RANGE: "Within data range",
     DECISION_CAUTION: "Caution",
     DECISION_REQUIRES_VALIDATION: "Requires validation",
+    DECISION_NOT_ASSESSED: "Not assessed",
 }
 
 DECISION_STATEMENTS = {
@@ -615,7 +619,32 @@ def format_model_probability(probability) -> str:
     return f"{probability:.0%}"
 
 
-def derive_decision_support(domain_coverage, has_prediction: bool = True):
+INPUT_SPACE_STATEMENTS = {
+    DECISION_WITHIN_DATA_RANGE: (
+        "Every input of this candidate lies within that feature's range in the historical data, and the combination of "
+        "inputs lies within the spacing of the training data. Both are diagnostics. They do not show that the model is "
+        "accurate for this candidate or that it will perform as predicted. It is not physical evidence and not a "
+        "qualification. Physical validation is still required before any candidate is considered qualified."
+    ),
+    "sparse": (
+        "Every input lies within its observed range, but the combination of inputs sits in a sparse part of the training "
+        "data: the nearest training input set is farther away than usual for this data. The estimate rests on little "
+        "nearby evidence. Validate physically before relying on it."
+    ),
+    "isolated": (
+        "Every input lies within its observed range, but the combination of inputs is isolated: it is farther from every "
+        "training input set than any training input set is from its nearest neighbour. The estimate is effectively an "
+        "extrapolation. Physical validation is required before it is relied on."
+    ),
+    "not_assessed": (
+        "Every input lies within its observed range, but the combination of inputs could not be assessed ({reason}). It "
+        "is not treated as supported. Physical validation is still required before any candidate is considered qualified."
+    ),
+}
+_SEVERITY = {DECISION_WITHIN_DATA_RANGE: 0, DECISION_CAUTION: 1, DECISION_REQUIRES_VALIDATION: 2}
+
+
+def derive_decision_support(domain_coverage, has_prediction: bool = True, input_space=None):
     """Categorical decision-support signal for one candidate.
 
     - no prediction                                  -> None
@@ -631,6 +660,8 @@ def derive_decision_support(domain_coverage, has_prediction: bool = True):
     coverage status -- not on probability, sigma, model quality or any recorded outcome."""
     if not has_prediction:
         return None
+    if input_space is not None:
+        return _derive_with_input_space(domain_coverage, input_space)
 
     domain_status = (
         domain_coverage.get("status")
@@ -647,6 +678,7 @@ def derive_decision_support(domain_coverage, has_prediction: bool = True):
             "scope": DECISION_SUPPORT_SCOPE,
             "not_established": list(DECISION_NOT_ESTABLISHED),
             "domain_status": None,
+            "range_check_status": DECISION_REQUIRES_VALIDATION,
             "label": DECISION_LABELS[DECISION_REQUIRES_VALIDATION],
             "statement": DECISION_STATEMENT_COVERAGE_UNAVAILABLE,
         }
@@ -657,9 +689,41 @@ def derive_decision_support(domain_coverage, has_prediction: bool = True):
         "scope": DECISION_SUPPORT_SCOPE,
         "not_established": list(DECISION_NOT_ESTABLISHED),
         "domain_status": domain_status,
+        "range_check_status": status,
         "label": DECISION_LABELS[status],
         "statement": DECISION_STATEMENTS[status],
     }
+
+
+def _derive_with_input_space(domain_coverage, input_space):
+    """Decision support from BOTH checks. The per-feature range check keeps its own result in range_check_status (the
+    ranking rule reads that field, so ordering is unchanged). The combination of inputs can only make the label more
+    cautious, never less, and an input space that could not be assessed is never read as supported."""
+    base = derive_decision_support(domain_coverage, has_prediction=True)
+    cls = (input_space or {}).get("class")
+    status, statement = base["status"], base["statement"]
+    if base["domain_status"] is None or base["status"] == DECISION_REQUIRES_VALIDATION:
+        pass  # outside the range, or coverage unknown: already the most cautious result
+    elif cls == "isolated":
+        status = DECISION_REQUIRES_VALIDATION
+        statement = INPUT_SPACE_STATEMENTS["isolated"] if base["status"] == DECISION_WITHIN_DATA_RANGE else (
+            base["statement"] + " The combination of inputs is also isolated from the training data.")
+    elif cls == "sparse_region":
+        status = DECISION_CAUTION
+        statement = INPUT_SPACE_STATEMENTS["sparse"] if base["status"] == DECISION_WITHIN_DATA_RANGE else (
+            base["statement"] + " The combination of inputs is also in a sparse part of the training data.")
+    elif cls == "within_training_spacing":
+        if base["status"] == DECISION_WITHIN_DATA_RANGE:
+            statement = INPUT_SPACE_STATEMENTS[DECISION_WITHIN_DATA_RANGE]
+    else:  # not assessed, or anything unrecognised: never silently supported
+        reason = (input_space or {}).get("reason") or "no reason recorded"
+        if base["status"] == DECISION_WITHIN_DATA_RANGE:
+            status = DECISION_NOT_ASSESSED
+            statement = INPUT_SPACE_STATEMENTS["not_assessed"].format(reason=reason.rstrip("."))
+        else:
+            statement = base["statement"] + f" The combination of inputs could not be assessed ({reason.rstrip('.')})."
+    return {**base, "status": status, "basis": DECISION_SUPPORT_BASIS_INTEGRATED, "scope": DECISION_SUPPORT_SCOPE_INTEGRATED,
+            "input_space_class": cls or "not_assessed", "label": DECISION_LABELS[status], "statement": statement}
 
 
 def deduplicate_rows(rows: list) -> list:

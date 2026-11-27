@@ -34,7 +34,9 @@ WHY "NOT RANKED" AND NOT "RANKED LAST" OR A SUBSTITUTE PROBABILITY
 WHAT THIS DOES NOT DO
   It does not make the model valid outside its data, does not validate the heuristic edge margin, and
   inherits the limits of the per-feature range check (it is not a joint applicability domain: a candidate
-  inside every individual range can still sit in an empty region of the combined input space).
+  inside every individual range can still sit in an empty region of the combined input space). Since the
+  candidate label also reflects the combination of inputs, a ranked candidate can carry a more cautious label
+  than its range check alone. The ORDER is unchanged and still follows the range check only.
 """
 from backend.app.services import change_case_rules
 
@@ -89,7 +91,9 @@ def _tier(decision_support):
     decision support at all, or an unknown status -- is None: it fails safe to not ranked."""
     if not isinstance(decision_support, dict):
         return None
-    return _TIER_BY_DECISION.get(decision_support.get("status"))
+    # The order is decided by the per-feature range check alone, as before. When the combination of inputs also feeds
+    # the label, the range check keeps its own result in range_check_status.
+    return _TIER_BY_DECISION.get(decision_support.get("range_check_status", decision_support.get("status")))
 
 
 def _statement(status, decision_support):

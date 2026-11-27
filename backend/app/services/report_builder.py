@@ -102,12 +102,16 @@ MODEL_ESTIMATE_NOTE = (
     + change_case_rules.PROBABILITY_DISPLAY_NOTE
 )
 DECISION_SUPPORT_EXPLANATION = (
-    "Decision support is a separate, categorical signal derived only from whether each "
-    "candidate lies within the observed historical range of every feature, checked one feature at a "
-    "time. It does not change or adjust the model-estimated probability. 'Within data range' does not "
-    "mean qualified, does not show that the combination of inputs is covered by the historical data or "
-    "that the model is accurate for the candidate, and is not physical evidence: physical validation is "
-    "required for every candidate."
+    "Decision support is a separate, categorical signal. It combines two checks: whether each candidate lies within "
+    "the observed historical range of every feature, checked one feature at a time, and how far the combination of "
+    "its inputs is from the nearest training input set, measured against the training evidence of the model version "
+    "that made the prediction. A candidate inside every range but in a sparse or isolated part of the data is labelled "
+    "Caution or Requires validation, and a candidate whose combination could not be assessed is labelled Not assessed. "
+    "It does not change or adjust the model-estimated probability. 'Within data range' does not mean qualified, does "
+    "not show that the combination of inputs is covered by the historical data (the distance check is a diagnostic, "
+    "not a guarantee), does not show that the model is accurate for the candidate, and is not physical evidence: physical validation is "
+    "required for every candidate. The distance values and thresholds are shown on the model version's Applicability "
+    "tab and are not repeated in this report."
 )
 
 CROSS_VALIDATION_CAVEAT = (

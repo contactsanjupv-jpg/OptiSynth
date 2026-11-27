@@ -293,6 +293,7 @@ def list_candidates_with_predictions(organization_id: int, change_case_id: int, 
     any_edited = any(cand_rules.prediction_matches_inputs(c, prediction_of(c)) is False for c in active_all)
     order_outdated = set_changed or any_edited
 
+    input_space_cache = {}
     for c in candidates:
         stored = json.loads(c["properties_json"])
         # Only the modelled input features are shown as the candidate's inputs. A value stored for any
@@ -306,6 +307,7 @@ def list_candidates_with_predictions(organization_id: int, change_case_id: int, 
         c["latest_prediction"] = prediction_of(c)
         c["domain_coverage"] = None
         c["decision_support"] = None  # C1: None until a prediction exists
+        c["input_space_applicability"] = None  # Level 5: None until a prediction exists
         c["prediction_stale"] = None  # None until a prediction exists
         c["prediction_dataset"] = None
         c["current_dataset"] = _dataset_ref(latest_dataset)
@@ -354,7 +356,13 @@ def list_candidates_with_predictions(organization_id: int, change_case_id: int, 
         # coverage above (so it inherits the same dataset-version
         # provenance). If a prediction exists but coverage could not be
         # determined (ranges is None), this fails safe to requires_validation.
-        c["decision_support"] = change_case_rules.derive_decision_support(c["domain_coverage"], has_prediction=True)
+        # Level 5: the combination of inputs, measured against the training evidence of the model version that made
+        # this prediction (never the latest upload), then folded into the label.
+        from backend.app.services import model_validation_service
+        c["input_space_applicability"] = model_validation_service.candidate_input_space(
+            organization_id, case, pred.get("model_version_id"), dataset_id, c["properties"], input_space_cache)
+        c["decision_support"] = change_case_rules.derive_decision_support(
+            c["domain_coverage"], has_prediction=True, input_space=c["input_space_applicability"])
     _assign_ranks(candidates, spec)
     return candidates
 
@@ -460,7 +468,7 @@ def _compute_evidence_metrics(spec: dict, experiments: list) -> tuple:
     return model_quality, uncertainty_calibration
 
 
-def rank_change_case(organization_id: int, change_case_id: int) -> list:
+def rank_change_case(organization_id: int, change_case_id: int, user_id: int = None) -> list:
     """The paid program action: scores every named candidate against
     the change case's uploaded historical qualification data, writes a
     fresh prediction + a minimum recommended experiment for each, and
@@ -577,6 +585,10 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
 
     ranked = engine_rank_candidates(X, y, direction, feature_columns, target_value, engine_candidates)
 
+    # Level 5: the registered model version these predictions come from (same data and settings, same version).
+    from backend.app.services import model_validation_service
+    model_version = model_validation_service.register_for_ranking(organization_id, case, dataset, user_id)
+
     candidate_ids = {c["id"] for c in candidates}
     # The inputs_version each candidate had when it was read: every prediction is stamped with it, so
     # a later edit of the candidate's values is recognised as "this prediction is for the old values".
@@ -594,9 +606,13 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
     # the historical data supports are ordered against each other. A candidate clearly outside the observed
     # range keeps the model's own numbers -- unchanged -- but gets NO position (neither first nor last).
     prepared = {}
+    input_space_cache = {}
     for r in ranked:
         domain_coverage = change_case_rules.classify_candidate_domain_coverage(r["features"], historical_ranges)
-        prepared[r["id"]] = (domain_coverage, change_case_rules.derive_decision_support(domain_coverage, has_prediction=True))  # C1
+        input_space = model_validation_service.candidate_input_space(
+            organization_id, case, model_version["id"] if model_version else None, dataset["id"], r["features"], input_space_cache)
+        prepared[r["id"]] = (domain_coverage, change_case_rules.derive_decision_support(
+            domain_coverage, has_prediction=True, input_space=input_space), input_space)  # C1 and Level 5
     evidence = ranking_evidence_rules.evidence_ranking(
         [{"id": r["id"], "predicted_probability": r["predicted_probability"],
           "predicted_value": r["predicted_value"], "decision_support": prepared[r["id"]][1]} for r in ranked],
@@ -607,7 +623,7 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
     to_persist = []
     for candidate_id in evidence["order"]:
         r = by_id[candidate_id]
-        domain_coverage, decision_support = prepared[candidate_id]
+        domain_coverage, decision_support, input_space = prepared[candidate_id]
         verdict = evidence["by_id"][candidate_id]
         experiment_description = _minimum_experiment_description(
             r, target_value, direction, domain_coverage, ranking_status=verdict["status"],
@@ -617,6 +633,7 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
             "candidate_id": candidate_id,
             "inputs_version": versions_read[candidate_id],
             "model_version": r["model_version"],
+            "model_version_id": model_version["id"] if model_version else None,
             "predicted_value": r["predicted_value"],
             "predicted_probability": r["predicted_probability"],
             "uncertainty_std": r["uncertainty_std"],
@@ -636,6 +653,7 @@ def rank_change_case(organization_id: int, change_case_id: int) -> list:
             "recommended_experiment": experiment_description,
             "domain_coverage": domain_coverage,
             "decision_support": decision_support,
+            "input_space_applicability": input_space,
             # Priority 7B: previously computed above and discarded. Same
             # values for every candidate in this ranking call (they describe
             # the dataset/model, not an individual candidate) -- attached
