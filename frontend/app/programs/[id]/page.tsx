@@ -19,6 +19,7 @@ import { ActivityTab } from "@/components/programs/ActivityTab";
 import { EvidencePanel } from "@/components/evidence/EvidencePanel";
 import { LaterLevelPanel } from "@/components/programs/LaterLevelPanel";
 import { ModelAnalysisPanel } from "@/components/models/ModelAnalysisPanel";
+import { DecisionWorkspace } from "@/components/decision/DecisionWorkspace";
 import { getWorkspace, type Workspace } from "@/lib/api/workspace";
 import "@/styles/components/program-workspace.css";
 import { useRequireAuth } from "@/lib/auth/useRequireAuth";
@@ -703,7 +704,12 @@ function ChangeCaseDetailPage() {
           </Button>
         </Card>
         )}
-        {tab === "analysis" && <ModelAnalysisPanel programId={changeCaseId} canRun={Boolean(ws?.permissions.can_decide)} />}
+        {tab === "analysis" && (
+          <div className="pw-stack">
+            <DecisionWorkspace programId={changeCaseId} />
+            <ModelAnalysisPanel programId={changeCaseId} canRun={Boolean(ws?.permissions.can_decide)} />
+          </div>
+        )}
         {tab === "experiments" && (
           <LaterLevelPanel title="Experiment planning" description="Experiment design, prioritization and tracking will appear here. The suggested validation step for each ranked candidate is on the Candidates tab."
             action={<Button variant="secondary" onClick={() => selectTab("candidates")}>Open candidates</Button>} />
